@@ -23,7 +23,14 @@ type Config struct {
 	Database DatabaseConfig
 	Redis    RedisConfig
 	Worker   WorkerConfig
+	Audit    AuditConfig
 	Tenancy  TenancyConfig
+}
+
+// AuditConfig 是审计日志参数。
+type AuditConfig struct {
+	// RetentionDays 是审计日志保留天数；worker 每天清理超过该天数的记录。
+	RetentionDays int `koanf:"retention_days"`
 }
 
 // TenancyConfig 是租户域名解析参数。
@@ -131,6 +138,9 @@ func DefaultConfig() Config {
 			IntervalSeconds: 60,
 			CoolingDays:     7,
 		},
+		Audit: AuditConfig{
+			RetentionDays: 90,
+		},
 	}
 }
 
@@ -197,6 +207,9 @@ func (c Config) validate() error {
 	}
 	if c.Worker.IntervalSeconds <= 0 {
 		return fmt.Errorf("worker.interval_seconds must be positive")
+	}
+	if c.Audit.RetentionDays <= 0 {
+		return fmt.Errorf("audit.retention_days must be positive")
 	}
 	if c.Worker.CoolingDays <= 0 {
 		return fmt.Errorf("worker.cooling_days must be positive")

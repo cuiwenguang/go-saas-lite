@@ -90,7 +90,24 @@
 | `expired` | 403 `TENANT_EXPIRED` |
 | `archived` | 404，对租户侧不可见 |
 
-平台接口（`/api/platform/v1`）：`POST /tenants` 开通并返回一次初始密码、`GET /tenants`、`GET /tenants/{id}`、`PATCH /tenants/{id}/status`、`DELETE /tenants/{id}`（转 `archived`）。
+平台接口（`/api/platform/v1`）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/tenants` | 列表：`page` / `size` / `status` / `keyword` / `plan_code` / `expire_before` |
+| GET | `/tenants/summary` | 各状态计数（列表分段筛选用） |
+| POST | `/tenants` | 开通，返回一次性初始密码 |
+| GET | `/tenants/{id}` | 详情（含 `provision_log` 时间线） |
+| PATCH | `/tenants/{id}` | 改名 / 换套餐 / 续费（改 `expire_at`；`expired` 续到未来自动回 `active`） |
+| PATCH | `/tenants/{id}/status` | 状态机流转 |
+| POST | `/tenants/{id}/retry` | 断点重跑开通流水线，重置管理员密码（一次性返回） |
+| POST | `/tenants/{id}/admin-password` | 重置租户管理员密码 |
+| GET | `/tenants/{id}/users` | 租户内用户与角色（只读） |
+| GET | `/tenants/{id}/usage` | 套餐限额 + 近 30 天用量 + 近 7 天趋势 |
+| DELETE | `/tenants/{id}` | 归档（转 `archived`） |
+| GET / POST / PATCH | `/plans` | 套餐：列表（带引用租户数）/ 新建 / 改配额与启停（`code` 不可改） |
+| GET | `/audit-logs` | 审计查询：分类 / 动作 / 级别 / 操作人 / 对象 / 时间范围 |
+| GET | `/stats/overview`、`/stats/usage-top` | 总览计数 + 近 7 天趋势；用量排行 |
 
 #### 1.2 租户配置 `tenant_configs`
 
@@ -127,9 +144,10 @@
 - 可以在 worker 里异步执行，接口先返回 `pending`。
 
 ```go
-// internal/platform/tenant/provisioner.go —— 当前实现：Service.provision 在租户事务内
-// 依次 ensureRole / ensureUser / bindRole，每步先查后建，重跑幂等。
-// （未抽象成 ProvisionStep 接口；步骤进度由 tenants.provision_step 字段记录。）
+// internal/platform/tenants/provisioner.go —— 当前实现：Service.provision 在租户事务内
+// 依次 ensureRole / ensureUser / bindRole，每步先查后建，重跑幂等；reset 为真时覆写管理员密码。
+// 步骤进度与历史由 tenants.provision_step + provision_log(jsonb) 记录：
+// [{step, ok, error, at}]；失败后 retry 从断点继续，管理员密码重置为新的一次性密码。
 ```
 
 #### 1.4 租户注销
@@ -142,10 +160,12 @@
 
 #### 1.5 租户上下文与解析
 
-- **v1 用 `X-Tenant-Id` 请求头 + 令牌**：免鉴权入口（登录 / OAuth）由 `X-Tenant-Id` 解析租户；已鉴权入口以令牌里的 `tenant_id` 为准（`X-Tenant-Id` 需与之一致）。
+- **v1 用 `X-Tenant-Id` 请求头 + 令牌**：免鉴权入口（登录 / OAuth）由 `X-Tenant-Id` 解析租户；已鉴权入口以令牌里的 `tenant_id` 为准，`X-Tenant-Id` 不参与已鉴权链。
 - **租户二级域名 / Host 解析优先级低，v1 不启用**：`TenantResolver` 保留了子域名兑底逻辑，但默认不配 `tenancy.base_domain` 即不生效。
 - 解析结果放进 `Scope` 注入 context；下游一律用 `tenancy.ScopeFrom(ctx)` 读取，不再额外传参。
-- 租户不存在 / 已禁用 / 已过期 → 直接拦截（现状：`TenantResolver` 在公开链做了状态拦截；已鉴权链暂无二次状态复查，见 §九）。
+- 租户不存在 / 已禁用 / 已过期 → 直接拦截。到期采用**读时判定**：`status = active` 且 `expire_at` 已过即按 `expired` 处理，**不写库**（`internal/app/tenantgate.go`）。
+- 状态判定在两条链上都有：公开链由 `TenantResolver` 解析后判定；已鉴权链由 `TenantStateGuard` 在令牌校验之后复查，租户被停用或到期后旧令牌立即失效。
+- 数据库状态由 worker 每日流转（`ExpireTenants`：`active` 且已过期 → `expired`），请求侧判定与库内状态互补。
 - **异步任务**：用 `context.WithoutCancel(ctx)` 派生并显式重建 `Scope`（项目当前没有 `tenantctx` 包）；任务 payload 必须显式带 `tenant_id`，worker 侧重建 `Scope`。只复制 ctx 在队列场景一定会丢。
 
 #### 1.6 数据隔离层
@@ -164,11 +184,11 @@
 - **租户用户**：存放在**租户隔离表 `users`**，直接带 `tenant_id`（v1 一人一租户）
 
 #### 2.2 Token 设计（golang-jwt v5）
-- Claim 必备：`sub`(user_id)、`actor_type`(`platform|tenant`)、`tenant_id`（租户 token 才有）、`client_id`（Agent token 才有）、`scope`、`jti`、`aud`、`exp`
+- Claim 必备：`sub`(user_id)、`actor_type`(`platform|tenant`)、`tenant_id`（租户 token 才有）、`client_id`（Agent token 才有）、`scope`、`typ`（`access` / `refresh`）、`jti`、`aud`、`exp`；`email` 仅用于审计展示
 - **`aud` 区分入口**：Web 应用 `aud = tenant-api`，Agent 客户端 `aud = mcp`，平台控制台 `aud = platform-api`；跨入口使用一律拒绝
 - **`aud` + `actor_type` 双校验**：平台路由链拒绝 `tenant` token，租户路由链拒绝 `platform` token
-- 刷新：refresh token **轮换**（rotation），旧 token 立即入黑名单
-- 登出：按 `jti` 写 redis 黑名单，TTL = 剩余有效期
+- 刷新：refresh token **轮换**（rotation）。平台控制台已实现：refresh 令牌走 httpOnly cookie `saas_platform_refresh`（`path=/api/platform/v1/auth`），jti 存 `platform_users.refresh_jti` 且只保留最近一次（单会话，轮换即作废旧会话）；`typ=refresh` 的令牌被 Guard 拒绝，不能访问业务接口
+- 登出：平台侧清空 `refresh_jti` 并清 cookie；租户 Web 侧的 refresh / 登出黑名单尚未实现（见 §九）
 - **不要把完整权限集合塞进 JWT**（权限变更无法即时生效）；JWT 只放身份，权限判定走 `internal/authz` 的进程内角色缓存（变更时 redis pub/sub 广播失效）
 
 #### 2.3 权限模型：角色表 + 代码权限点
@@ -270,7 +290,7 @@ type Authorizer interface {
 ```
 
 - `permission` 中间件：`tenant_id` 只从 `Scope` 取、`user_id` 只从 JWT/ctx 取，**绝不读请求体 / query / header 里的角色或权限字段**
-- 平台侧不动：`platform_users.role` 单角色枚举，复用同一套 `Enforce` 实现（静态矩阵），**不进角色表**
+- 平台侧不建角色表：`platform_users.role` 只有 `owner` / `viewer`，权限点在 `internal/security/authz/platform.go` 用静态矩阵映射（owner 全部、viewer 只读），路由级挂 `authz.PlatformRequire(perm)`，`GET /me` 下发 `permissions[]` 供前端控制菜单与按钮。
 
 #### 2.4 密码与登录安全
 
@@ -442,6 +462,7 @@ database:
 
 - 套餐 = 一组配额上限，**用 JSON 存在平台组的 `plans.quota`**：`{"max_users":10,"storage_gb":5,"api_qps":20,"mcp_calls":100000,"mcp_tokens":5000000,"mcp_sessions":50,"features":["sms"]}`。
 - `plans` 至少包含 `id`、`code`（唯一）、`name`、`quota`（JSON）、`enabled`、`created_at`、`updated_at`。
+- 套餐管理：`GET /api/platform/v1/plans`（带引用租户数）、`POST /plans`（新建）、`PATCH /plans/{id}`（改名 / 改配额 / 启停；`code` 不可改）。改动经 `quota.PlanStore` 的 30s 缓存，最迟 30 秒对租户生效。
 - 套餐归属平台组，由 `PlatformDB` 读取；租户只通过 `tenants.plan_code` 引用套餐，不把套餐记录复制进租户组。
 - 配额校验：`quota.Service.Check/Consume` 读租户套餐 + 当天用量，超限返回 `3xxxx`；计次入口调用 `Consume`
 - 用量统计：Redis hash 按天计数，worker 定期落 `usage_daily`
@@ -474,9 +495,13 @@ database:
 
 ### 9. 审计日志
 
-- 两个通道，**不要混**：平台操作日志（`system_operation_log`）、租户内操作日志（按 `tenant_id` 隔离）
-- 框架提供写入接口 + 中间件 / 工具
-- **必须记录平台侧越权查询**：谁、什么原因、什么时间（走独立平台连接池）
+- 两个通道，**不要混**：平台操作日志（`system_operation_log`）、租户内操作日志（按 `tenant_id` 隔离，**未建表**，见 §九）
+- 平台通道已落地（`internal/platform/audit`）：`Record` 写入 + `GET /api/platform/v1/audit-logs` 查询，支持分类 / 动作 / 级别 / 操作人 / 对象 / 时间范围筛选
+- 字段：`category`（`tenant` / `plan` / `auth` / `security` / `config` / `system`）+ `action`（代码常量，如 `tenant.create`、`plan.toggle`）+ `level`（`info` / `warn`）+ `result` + 操作人（`actor_type` / `actor_id` / `actor_email`）+ `object_type` / `object_id` + `summary` + `before_data` / `after_data` + `request_id` + `ip`
+- 已埋点：租户开通 / 修改 / 续费 / 变更状态（归档记 warn）/ 重试开通 / 重置密码（warn）、套餐新建 / 修改 / 启停、平台登录成功与失败（warn）/ 改密（warn）、**跨租户查看租户用户**（`security`，warn）
+- 操作人邮箱来自 JWT `email` claim（写入 `Scope.ActorEmail`），不额外查库；`request_id` / `ip` 由 `pkg/response` 中间件写入 ctx
+- 保留期：`audit.retention_days`（进程配置，默认 90），worker 每次 tick 清理超期记录
+- **不允许导出**：日志只用于页面查询与评审，按分类与风险级别筛选
 
 ### 10. 隔离测试工具 `internal/testutil`
 
@@ -605,9 +630,12 @@ go-saas-lite/
 │   ├── quota/                   # 配额接口与校验中间件
 │   ├── worker/                  # 维护锁 + 用量落库 + 归档清理
 │   ├── platform/                # 平台控制台侧（package platform 聚合子模块）
-│   │   ├── module.go            #   聚合 account + tenant
-│   │   ├── account/             #   平台登录 + owner 写守卫
-│   │   └── tenant/              #   租户模块：CRUD + 开通流水线 + 内置角色同步
+│   │   ├── module.go            #   聚合 account + tenants + plans + stats + audit
+│   │   ├── account/             #   平台会话：登录 / refresh / logout / 改密 / me
+│   │   ├── tenants/             #   租户：CRUD + 开通流水线 + 重试 + 用量
+│   │   ├── plans/               #   套餐：列表（引用数）/ 新建 / 改配额与启停
+│   │   ├── stats/               #   总览：计数 / 趋势 / 用量排行
+│   │   └── audit/               #   审计：动作常量 + 写入 + 查询
 │   ├── tenant/                  # 租户侧（package tenant 聚合子模块）
 │   │   ├── module.go            #   聚合 account + conf
 │   │   ├── account/             #   租户用户登录 + API Key 自助
@@ -616,7 +644,7 @@ go-saas-lite/
 │   └── testutil/                # 双租户隔离测试夹具（不属生产底座）
 ├── pkg/                         # 基础设施：只被业务引用，不 import internal
 │   ├── apperr/                  # 错误码分段 + 错误类型
-│   ├── response/                # code/msg/data、RequestID 中间件
+│   ├── response/                # code/msg/data、RequestID / ClientIP 中间件
 │   ├── obs/                     # slog、otel、metrics、health、recover
 │   ├── tenancy/                 # Scope / DB 门面 / Tx / gorm 初始化 / 租户 Callback
 │   ├── redisx/                  # 客户端、锁
@@ -842,17 +870,18 @@ cors → recover → request_id → [otelgin + trace] → [metrics] → logger
 三条业务入口链分开注册、互不通用（`internal/app/routes.go` 构造 `routes.Routes`，各模块 `Module()` 自己往对应链挂 handler）：
 
 ```
-租户 Web 链  /api/tenant/v1/*        : auth.Guard(aud=tenant-api, actor=tenant) → quota.Middleware(QPS + api_calls) → handler
+租户 Web 链  /api/tenant/v1/*        : auth.Guard(aud=tenant-api, actor=tenant) → TenantStateGuard（状态复查）→ quota.Middleware(QPS + api_calls) → handler
                                       （RBAC 在路由级用 authz.Require(perm) 声明）
-平台链       /api/platform/v1/*      : auth.Guard(aud=platform-api, actor=platform) → platformauth.WriteGuard(owner) → handler
-MCP 链       /api/tenant/v1/mcp      : MCPAuth（API Key 或 aud=mcp 的 JWT）→ MCP handler（不套统一响应）
-公开链       /api/tenant/v1（登录/OAuth）: TenantResolver(X-Tenant-Id / 子域名) → handler（无令牌）
+平台链       /api/platform/v1/*      : auth.Guard(aud=platform-api, actor=platform) → 路由级 authz.PlatformRequire(perm) → handler
+MCP 链       /api/tenant/v1/mcp      : MCPAuth（API Key 或 aud=mcp 的 JWT）→ TenantStateGuard → MCP handler（不套统一响应）
+公开链       /api/tenant/v1（登录/OAuth）: TenantResolver(X-Tenant-Id / 子域名，含状态判定) → handler（无令牌）
 ```
 
 - `cors` 在最外层，目前按 `server.allowed_origins` 静态白名单放行（**尚未按 `tenants.domain/subdomain` 动态解析**）；`OPTIONS` 预检直接返回。
 - `auth.Guard` 同时完成「验签 + `aud` 校验 + `actor_type` 校验」（即文档里的 credential_auth + actor_guard），并写入 `Scope`。
 - `quota.Middleware` 同时做每秒 QPS 限流（`api_qps`）与 `api_calls` 计数。
-- **尚未实现**：独立的 `tenant_status_check`（拦 pending/suspended/expired）、独立的 `rate_limit` 中间件、Agent 链的 `tenant_consistency_check`、按租户域名动态 CORS。见 §九。
+- `TenantStateGuard` 承担 `tenant_status_check`：`pending` / `suspended` / `expired` / `archived` 一律拦截，到期为读时判定。
+- **尚未实现**：按租户域名动态 CORS（v1 用 `server.allowed_origins` 静态白名单）、`Idempotency-Key` 中间件。见 §九。
 
 ### 3.6 事务 / 错误 / 日志
 
@@ -954,13 +983,16 @@ MCP 链       /api/tenant/v1/mcp      : MCPAuth（API Key 或 aud=mcp 的 JWT）
 | M5 | Provisioning 流水线（含初始管理员 + 内置角色授予）→ 租户 CRUD + 租户配置 |
 | M6 | 配额校验 + `cmd/worker`（注销清理、用量落库） |
 | M7 | `internal/security/oauth`（授权码 + PKCE + 动态注册）+ `internal/mcp`（Streamable HTTP + 会话 + JSON-RPC + 工具网关，已合并原 mcpgateway）+ MCP 配额与调用日志 |
+| M8 | 平台控制台：会话（email 登录 / me / refresh / logout / 改密）+ owner|viewer 权限矩阵 + 租户管理全链路（列表 / 开通 / 进度时间线 / 重试 / 续费 / 归档 / 重置密码 / 用户 / 配额用量）+ 套餐 + 审计 + 总览 + 到期治理 |
+
+> M1–M8 已落地；租户控制台前端仍跑 mock，见 §八 / §九。
 
 ## 八、下一步
 
-1. 落地 M1 + M2 骨架代码（fx module 骨架 + 最小测试迁移 + `tenancy.DB` + 隔离测试）
-2. `go.mod` 的 module 改为完整路径（如 `github.com/<org>/go-saas-lite`）。
-3. 引入 `go.uber.org/fx`，并补两条 CI 测试：`fx.ValidateApp`、跨租户角色越权用例（A 租户的用户拿不到 B 租户角色的权限）
-4. MCP 端点用 `modelcontextprotocol/go-sdk` 的客户端做联调，覆盖 `initialize` / `tools/list` / `tools/call` 三条路径
+1. 租户控制台（`web/src/views/tenant/*`）从 mock 切真实接口：成员管理、API Key、MCP 服务与工具、租户配置
+2. 租户 Web 会话：补 `GET /api/tenant/v1/me` 与 refresh（httpOnly cookie + 轮换）；`POST /auth/login` 已发 access token
+3. 租户侧安全能力：登录失败锁定、密码强度策略、`token_version` 校验、最后管理员保护（见 §9.2）
+4. 平台运行时配置（D10 第二层）暂不落库，继续用 `configs/config.yaml` + 环境变量
 
 ## 九、实现现状核对（未完成清单）
 
@@ -970,7 +1002,9 @@ MCP 链       /api/tenant/v1/mcp      : MCPAuth（API Key 或 aud=mcp 的 JWT）
 
 - **租户生命周期**：开通（平台段提交 → 租户段事务 → 步骤落库）、CRUD、状态机（`canTransition`）、归档；迁移含 `tenants`/`roles`/`user_roles`/`users`/`tenant_configs`。
 - **隔离**：`Scope` + GORM Callback + `PlatformDB` 双连接池 + `platformTables` 白名单 + 双租户隔离用例。
-- **鉴权**：JWT（HS256，`aud` + `actor_type` 双校验）、平台/租户/MCP 三条链、平台 `owner` 写守卫。
+- **鉴权**：JWT（HS256，`aud` + `actor_type` 双校验，`typ` 区分 access / refresh）、平台/租户/MCP 三条链、平台路由级 `authz.PlatformRequire(perm)`（owner / viewer 静态矩阵）、`TenantStateGuard` 状态复查。
+- **平台控制台**：会话（email 登录 / `GET /me` / refresh / logout / 改密）、租户管理（列表筛选 / 开通 / 进度时间线 / 重试 / 续费 / 归档 / 重置密码 / 用户 / 配额用量）、套餐（列表 + 引用数 / 新建 / 改配额 / 启停）、审计（6 分类 + 动作常量 + 风险级别 + 保留期清理）、总览（计数 / 近 7 天趋势 / 用量 Top5 / 失败待处理）。
+- **到期治理**：读时判定（`active` + `expire_at` 已过 → `expired`，不写库）+ 公开链与已鉴权链状态复查 + worker `ExpireTenants` 落库。
 - **RBAC**：权限点常量、内置角色（admin/member）、进程内缓存 + redis pub/sub 失效、`SyncBuiltinRoles`。
 - **配额**：`plans` + Redis 用量 + worker 落 `usage_daily` + QPS/`api_calls` 中间件 + MCP `mcp_calls` 计量。
 - **OAuth 2.1**：register / authorize / token / refresh（轮换）/ revoke + well-known + PKCE S256 + 单次授权码。
@@ -984,25 +1018,24 @@ MCP 链       /api/tenant/v1/mcp      : MCPAuth（API Key 或 aud=mcp 的 JWT）
 
 | # | 项目 | 现状 | 影响 / 备注 |
 |---|---|---|---|
-| 1 | `tenant_status_check` 中间件 | 部分实现 | 公开链由 `TenantResolver` 内联拦截 pending/suspended/expired/archived；已鉴权租户链未做状态复查（正文 §1.1 / §3.5 是目标行为）。 |
-| 2 | 审计日志 `system_operation_log` / `tenant_operation_log` | 表未建、无写入 | `pkg/tenancy` 只留了白名单常量，迁移里没有这两张表。 |
-| 3 | Web refresh token / 登录失败锁定 / 密码复杂度 / `token_version` 失效 | 未实现 | `/auth/login` 只发 access token；`must_change_password` 仅返回不强制；`token_version` 列存在但 Guard 不校验。 |
-| 4 | 最后一个管理员保护 | 未实现 | 当前没有删除用户 / 解绑角色接口，暂不触发。 |
-| 5 | 租户配置缓存 + 多副本通知 | 未实现 | `tenantconf` 直读 DB，无本地缓存 / pub-sub。 |
-| 6 | `mcp_tools` 保存时校验 `required_perms ⊆ authz.All()` | 未实现 | 目前没有工具注册 / 保存接口。 |
-| 7 | `tools/call` 按 `InputSchema` 校验入参 | 未实现 | 目前不校验 `arguments`，直接转发上游。 |
-| 8 | MCP `mcp_sessions` / `mcp_tokens` 计量 | 未实现 | 会话不占配额；不统计上游 token 数。 |
-| 9 | `MCP-Protocol-Version` 头协商 | 未实现 | `initialize` 固定回传服务端默认版本。 |
-| 10 | Schema-per-tenant（`TenantSchemaManager`、`cmd/migrate --all-tenants`） | 未实现 | 仅共享表模式；`--all-tenants` 未启用即报错。 |
-| 11 | 文件存储 `Storage` 接口（Put/Get/Delete/SignedURL） | 未实现 | `pkg/storage` 不存在。 |
-| 12 | 异步队列（`TaskQueue` + asynq） | 未实现 | 仅 worker 定时循环 + redis 锁。 |
-| 13 | 写接口幂等（`Idempotency-Key`） | 未实现 | 只在 CORS 允许头里列了该头，无中间件。 |
-| 14 | pprof 独立内网端口 | 未实现 | 未挂载。 |
+| 1 | 租户内操作日志 `tenant_operation_log` | 未建表、无写入 | 平台通道 `system_operation_log` 已落地并埋点；租户内操作日志仍缺 |
+| 2 | 租户 Web refresh token / 登录失败锁定 / 密码复杂度 / `token_version` 校验 | 未实现 | 平台侧 refresh / logout / 改密已实现；`/api/tenant/v1/auth/login` 仍只发 access token，`token_version` 未在 Guard 校验，`must_change_password` 仅返回不强制 |
+| 3 | 租户侧 `GET /auth/v1/me` | 未实现 | 租户控制台登录后的用户与权限集合缺少接口（前端仍用 mock） |
+| 4 | 最后一个管理员保护 | 未实现 | 当前没有删除用户 / 解绑角色接口，暂不触发 |
+| 5 | 租户配置缓存 + 多副本通知 | 未实现 | `tenantconf` 直读 DB，无本地缓存 / pub-sub |
+| 6 | `mcp_tools` 保存时校验 `required_perms ⊆ authz.All()` | 未实现 | 目前没有工具注册 / 保存接口 |
+| 7 | `tools/call` 按 `InputSchema` 校验入参 | 未实现 | 目前不校验 `arguments`，直接转发上游 |
+| 8 | MCP `mcp_sessions` / `mcp_tokens` 计量 | 未实现 | 会话不占配额；不统计上游 token 数 |
+| 9 | `MCP-Protocol-Version` 头协商 | 未实现 | `initialize` 固定回传服务端默认版本 |
+| 10 | Schema-per-tenant（`TenantSchemaManager`、`cmd/migrate --all-tenants`） | 未实现 | 仅共享表模式；`--all-tenants` 未启用即报错 |
+| 11 | 文件存储 `Storage` 接口（Put/Get/Delete/SignedURL） | 未实现 | `pkg/storage` 不存在 |
+| 12 | 异步队列（`TaskQueue` + asynq） | 未实现 | 仅 worker 定时循环 + redis 锁 |
+| 13 | 写接口幂等（`Idempotency-Key`） | 未实现 | 只在 CORS 允许头里列了该头，无中间件 |
+| 14 | pprof 独立内网端口 | 未实现 | 未挂载 |
 | 15 | CORS 按租户域名动态白名单 | 未实现 | 目前用 `server.allowed_origins` 静态配置。 |
-| 16 | 租户一致性校验（令牌 tenant vs `X-Tenant-Id`） | 未实现 | 已鉴权链以令牌 tenant 为准，不比对 Header；v1 要求两者一致时需补校验。 |
-| 17 | `/oauth/consent` 同意页 | 未实现 | `authorize` 直接签发授权码。 |
-| 18 | 撤销授权时作废 `Mcp-Session-Id` | 未实现 | `revoke` 只删 refresh + 置 `oauth_grants.revoked_at`。 |
-| 19 | 平台运行时配置（D10 第二层，DB） | 未实现 | 仅进程配置 + 租户配置两层。 |
-| 20 | 集成测试目录 `internal/integration/` | 未建立 | 需要真实库的用例仍与包同目录。 |
-| 21 | 接口文档（OpenAPI / Swagger / huma） | 未实现 | 无内置 OpenAPI 描述与 Swagger UI；各模块路由目前只能看代码。 |
-| 22 | 租户二级域名 / Host 解析 | 不启用（低优先级） | `TenantResolver` 保留兑底逻辑，默认不配 `tenancy.base_domain`；v1 用 `X-Tenant-Id` + 令牌。 |
+| 16 | `/oauth/consent` 同意页 | 未实现 | `authorize` 直接签发授权码。 |
+| 17 | 撤销授权时作废 `Mcp-Session-Id` | 未实现 | `revoke` 只删 refresh + 置 `oauth_grants.revoked_at`。 |
+| 18 | 平台运行时配置（D10 第二层，DB） | 不落库 | 按定稿使用进程配置（yaml + env）；`audit.retention_days` 等调整改配置后重启生效。 |
+| 19 | 集成测试目录 `internal/integration/` | 未建立 | 需要真实库的用例仍与包同目录。 |
+| 20 | 接口文档（OpenAPI / Swagger / huma） | 未实现 | 无内置 OpenAPI 描述与 Swagger UI；各模块路由目前只能看代码。 |
+| 21 | 租户二级域名 / Host 解析 | 不启用（低优先级） | `TenantResolver` 保留兑底逻辑，默认不配 `tenancy.base_domain`；v1 用 `X-Tenant-Id` + 令牌。 |

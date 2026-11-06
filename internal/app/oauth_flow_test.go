@@ -22,7 +22,9 @@ import (
 	"github.com/cuiwenguang/go-saas-lite/internal/app"
 	"github.com/cuiwenguang/go-saas-lite/internal/mcp"
 	platformaccount "github.com/cuiwenguang/go-saas-lite/internal/platform/account"
-	"github.com/cuiwenguang/go-saas-lite/internal/platform/tenant"
+	"github.com/cuiwenguang/go-saas-lite/internal/platform/audit"
+	"github.com/cuiwenguang/go-saas-lite/internal/platform/tenants"
+
 	"github.com/cuiwenguang/go-saas-lite/internal/routes"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/apikey"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/auth"
@@ -54,12 +56,12 @@ func newFullFixture(t *testing.T) *fullFixture {
 	keys := apikey.NewService(h.Platform)
 	authorizer := authz.NewService(authz.NewGormSource(h.Tenant))
 
-	svc := tenant.NewService(h.Platform, h.Tenant)
+	svc := tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform))
 	hex := strings.ReplaceAll(uuid.Must(uuid.NewV7()).String(), "-", "")
 	email := "owner-" + hex[len(hex)-8:] + "@oauth.test"
 	password := "password123"
 
-	created, _, err := svc.Create(t.Context(), tenant.CreateInput{
+	created, _, err := svc.Create(t.Context(), tenants.CreateInput{
 		Code:          "oauth-" + hex[len(hex)-10:],
 		Name:          "OAuth Tenant",
 		Timezone:      "Asia/Shanghai",
@@ -72,7 +74,7 @@ func newFullFixture(t *testing.T) *fullFixture {
 	}
 
 	tenantAccount := tenantaccount.NewHandler(tenantaccount.NewService(h.Tenant, issuer, keys), authorizer)
-	platformH := platformaccount.NewHandler(platformaccount.NewService(h.Platform, issuer))
+	platformH := platformaccount.NewHandler(platformaccount.NewService(h.Platform, issuer, audit.NewService(h.Platform)), platformaccount.Options{})
 
 	var oauthHandler *oauth.Handler
 	if client := testRedis(t); client != nil {
@@ -91,15 +93,15 @@ func newFullFixture(t *testing.T) *fullFixture {
 	routeGroups := routes.Routes{
 		Public:         public,
 		PlatformPublic: engine.Group("/api/platform/v1"),
-		Tenant:         app.TenantChain(engine.Group("/api/tenant/v1"), issuer),
+		Tenant:         app.TenantChain(engine.Group("/api/tenant/v1"), issuer, app.NewTenantLookup(h.Platform)),
 		Platform:       app.PlatformChain(engine.Group("/api/platform/v1"), issuer),
-		MCP:            app.MCPChain(engine.Group("/api/tenant/v1/mcp"), issuer, keys),
+		MCP:            app.MCPChain(engine.Group("/api/tenant/v1/mcp"), issuer, keys, app.NewTenantLookup(h.Platform)),
 	}
 
 	tenantAccount.RegisterPublic(routeGroups.Public)
 	tenantAccount.Register(routeGroups.Tenant)
 	platformH.RegisterPublic(routeGroups.PlatformPublic)
-	tenant.NewHandler(svc).Register(routeGroups.Platform)
+	tenants.NewHandler(svc).Register(routeGroups.Platform)
 	if oauthHandler != nil {
 		oauthHandler.RegisterPublic(routeGroups.Public)
 		oauthHandler.Register(routeGroups.Tenant)

@@ -6,14 +6,19 @@ import (
 	"github.com/cuiwenguang/go-saas-lite/internal/routes"
 )
 
-// Module 装配平台登录模块。
-func Module() fx.Option {
+// Module 装配平台会话模块；opts 由聚合层传入（cookie 安全开关）。
+func Module(opts Options) fx.Option {
 	return fx.Module("platform.account",
-		fx.Provide(NewService, NewHandler),
+		fx.Provide(
+			func() Options { return opts },
+			NewService,
+			NewHandler,
+		),
 		fx.Invoke(registerRoutes),
 	)
 }
 
 func registerRoutes(r routes.Routes, h *Handler) {
 	h.RegisterPublic(r.PlatformPublic)
+	h.Register(r.Platform)
 }

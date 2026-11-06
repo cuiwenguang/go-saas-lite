@@ -1,9 +1,12 @@
 package app_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -33,7 +36,50 @@ func newChainProbe(t *testing.T, mount func(*gin.Engine, *auth.Issuer) *gin.Rout
 }
 
 func tenantMount(engine *gin.Engine, issuer *auth.Issuer) *gin.RouterGroup {
-	return app.TenantChain(engine.Group("/api/tenant/v1"), issuer)
+	return app.TenantChain(engine.Group("/api/tenant/v1"), issuer, activeLookup{})
+}
+
+// activeLookup 模拟一个状态正常的租户，供只关注鉴权的用例复用。
+type activeLookup struct{}
+
+func (activeLookup) ResolveTenant(ctx context.Context, key string) (app.TenantInfo, error) {
+	return app.TenantInfo{ID: key, Status: "active"}, nil
+}
+
+// expiredLookup 模拟「状态还是 active，但 expire_at 已过」的租户。
+type expiredLookup struct{}
+
+func (expiredLookup) ResolveTenant(ctx context.Context, key string) (app.TenantInfo, error) {
+	past := time.Now().Add(-time.Hour)
+	return app.TenantInfo{ID: key, Status: "active", ExpireAt: &past}, nil
+}
+
+// 到期读时判定：数据库里还是 active，但过期后必须按 expired 拦截。
+func TestTenantChainRejectsExpiredTenant(t *testing.T) {
+	t.Parallel()
+
+	issuer := auth.NewIssuer("test-secret", "go-saas-lite-test")
+	token, err := issuer.Issue(auth.IssueOptions{
+		Subject:  "user-1",
+		Actor:    tenancy.ActorTenant,
+		Audience: auth.AudienceTenantAPI,
+		TenantID: "tenant-1",
+	})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	mount := func(engine *gin.Engine, issuer *auth.Issuer) *gin.RouterGroup {
+		return app.TenantChain(engine.Group("/api/tenant/v1"), issuer, expiredLookup{})
+	}
+
+	recorder := callProbe(newChainProbe(t, mount), "/api/tenant/v1/probe", token)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "10004") {
+		t.Fatalf("want tenant expired code, got %s", recorder.Body.String())
+	}
 }
 
 func platformMount(engine *gin.Engine, issuer *auth.Issuer) *gin.RouterGroup {
@@ -167,7 +213,7 @@ func TestMCPChainRejectsWebToken(t *testing.T) {
 	}
 
 	mount := func(engine *gin.Engine, issuer *auth.Issuer) *gin.RouterGroup {
-		return app.MCPChain(engine.Group("/api/tenant/v1/mcp"), issuer, nil)
+		return app.MCPChain(engine.Group("/api/tenant/v1/mcp"), issuer, nil, activeLookup{})
 	}
 
 	recorder := callProbe(newChainProbe(t, mount), "/api/tenant/v1/mcp/probe", token)

@@ -23,8 +23,9 @@ func main() {
 	}
 
 	opts := worker.Options{
-		Interval:    time.Duration(cfg.Worker.IntervalSeconds) * time.Second,
-		CoolingDays: cfg.Worker.CoolingDays,
+		Interval:           time.Duration(cfg.Worker.IntervalSeconds) * time.Second,
+		CoolingDays:        cfg.Worker.CoolingDays,
+		AuditRetentionDays: cfg.Audit.RetentionDays,
 	}
 
 	fx.New(fx.Options(

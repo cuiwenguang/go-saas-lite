@@ -21,7 +21,7 @@ import (
 // 顺序（readme 3.5，M3 完成通用段 + 两条鉴权链）：
 // cors → recover → request_id → trace/metrics → logger → auth(guard) → handler
 // 租户解析、权限、配额在后续里程碑插入到 auth 之后。
-func NewRouter(cfg Config, log *slog.Logger, metrics *obs.Metrics, health *obs.Health, issuer *auth.Issuer, keys *apikey.Service, lookup tenantLookup, quotaService *quota.Service) (*gin.Engine, routes.Routes) {
+func NewRouter(cfg Config, log *slog.Logger, metrics *obs.Metrics, health *obs.Health, issuer *auth.Issuer, keys *apikey.Service, lookup TenantLookup, quotaService *quota.Service) (*gin.Engine, routes.Routes) {
 	if cfg.App.Env != "dev" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -30,6 +30,7 @@ func NewRouter(cfg Config, log *slog.Logger, metrics *obs.Metrics, health *obs.H
 	engine.Use(cors(cfg.Server.AllowedOrigins))
 	engine.Use(obs.Recover(log, metrics))
 	engine.Use(response.RequestID())
+	engine.Use(response.ClientIP())
 	if cfg.Trace.Enabled {
 		engine.Use(otelgin.Middleware(cfg.App.Name))
 		engine.Use(obs.TraceContext())
@@ -47,7 +48,7 @@ func NewRouter(cfg Config, log *slog.Logger, metrics *obs.Metrics, health *obs.H
 	public := engine.Group("/api/tenant/v1")
 	public.Use(TenantResolver(lookup, cfg.Tenancy.BaseDomain))
 
-	tenantChain := TenantChain(engine.Group("/api/tenant/v1"), issuer)
+	tenantChain := TenantChain(engine.Group("/api/tenant/v1"), issuer, lookup)
 	if quotaService != nil {
 		tenantChain.Use(quota.Middleware(quotaService))
 	}
@@ -58,7 +59,7 @@ func NewRouter(cfg Config, log *slog.Logger, metrics *obs.Metrics, health *obs.H
 		PlatformPublic: engine.Group("/api/platform/v1"),
 		Tenant:         tenantChain,
 		Platform:       PlatformChain(engine.Group("/api/platform/v1"), issuer),
-		MCP:            MCPChain(engine.Group("/api/tenant/v1/mcp"), issuer, keys),
+		MCP:            MCPChain(engine.Group("/api/tenant/v1/mcp"), issuer, keys, lookup),
 	}
 
 	registerOAuthMetadata(engine)

@@ -8,3 +8,8 @@
 # 本地配置覆盖
 configs/*.local.yaml
 .env
+
+# vue
+web/node_modules/
+web/dist/
+

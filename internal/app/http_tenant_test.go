@@ -13,7 +13,8 @@ import (
 
 	"github.com/cuiwenguang/go-saas-lite/internal/app"
 	"github.com/cuiwenguang/go-saas-lite/internal/platform/account"
-	"github.com/cuiwenguang/go-saas-lite/internal/platform/tenant"
+	"github.com/cuiwenguang/go-saas-lite/internal/platform/audit"
+	"github.com/cuiwenguang/go-saas-lite/internal/platform/tenants"
 	"github.com/cuiwenguang/go-saas-lite/internal/routes"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/auth"
 	"github.com/cuiwenguang/go-saas-lite/internal/testutil"
@@ -31,7 +32,7 @@ func newPlatformAPI(t *testing.T) (*gin.Engine, *auth.Issuer) {
 	routeGroups := routes.Routes{
 		Platform: app.PlatformChain(engine.Group("/api/platform/v1"), issuer),
 	}
-	tenant.NewHandler(tenant.NewService(h.Platform, h.Tenant)).Register(routeGroups.Platform)
+	tenants.NewHandler(tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform))).Register(routeGroups.Platform)
 
 	return engine, issuer
 }
@@ -93,7 +94,7 @@ func TestPlatformTenantAPI(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if created.Data.Tenant.ID == "" || created.Data.Tenant.Status != tenant.StatusActive {
+	if created.Data.Tenant.ID == "" || created.Data.Tenant.Status != tenants.StatusActive {
 		t.Fatalf("unexpected tenant payload: %+v", created.Data)
 	}
 	if created.Data.InitialPassword == "" {

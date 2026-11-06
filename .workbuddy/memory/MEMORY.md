@@ -2,6 +2,8 @@
 
 ## 前端架构定案（2026-11-06，详见 CONVENTIONS-FRONTEND.md）
 
+- 前端规范已同步为 skill：`.workbuddy/skills/go-saas-frontend/`（SKILL.md + references/ui-patterns.md），项目级共享；规范唯一源仍是根目录 `CONVENTIONS-FRONTEND.md`，skill 只是加载入口。
+
 - 营销站 = Go 模板（`internal/web/`，Tailwind CLI 产单 CSS embed）；控制台 = `web/` 单 Vue 项目双入口（admin.html/tenant.html），Element Plus 按需 + axios + pinia + vxe-table + echarts，控制台禁 Tailwind、禁第二 UI 库、禁 workspace（升级触发条件见规范 §9）。
 - 认证：access token 仅内存（pinia），refresh 走 httpOnly cookie；前端权限只认 `/me` 返回的权限点字符串（perms.ts 常量），禁角色字符串判断。
 - URL/类型集中在 `web/src/shared/api/`（未来由 api/openapi.yaml 生成）；请求唯一通道 shared/http，业务代码禁裸 URL/绝对地址。

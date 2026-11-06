@@ -14,7 +14,8 @@ import (
 
 	"github.com/cuiwenguang/go-saas-lite/internal/app"
 	"github.com/cuiwenguang/go-saas-lite/internal/mcp"
-	"github.com/cuiwenguang/go-saas-lite/internal/platform/tenant"
+	"github.com/cuiwenguang/go-saas-lite/internal/platform/audit"
+	"github.com/cuiwenguang/go-saas-lite/internal/platform/tenants"
 	"github.com/cuiwenguang/go-saas-lite/internal/routes"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/apikey"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/auth"
@@ -39,12 +40,12 @@ func newMCPFixture(t *testing.T) *mcpFixture {
 	h := testutil.New(t)
 	issuer := auth.NewIssuer("test-secret", "go-saas-lite-test")
 
-	svc := tenant.NewService(h.Platform, h.Tenant)
+	svc := tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform))
 	hex := strings.ReplaceAll(uuid.Must(uuid.NewV7()).String(), "-", "")
 	email := "admin-" + hex[len(hex)-8:] + "@mcp.test"
 	password := "password123"
 
-	created, _, err := svc.Create(t.Context(), tenant.CreateInput{
+	created, _, err := svc.Create(t.Context(), tenants.CreateInput{
 		Code:          "mcp-" + hex[len(hex)-10:],
 		Name:          "MCP Tenant",
 		Timezone:      "Asia/Shanghai",
@@ -70,8 +71,8 @@ func newMCPFixture(t *testing.T) *mcpFixture {
 	engine := gin.New()
 	routeGroups := routes.Routes{
 		Public: engine.Group("/api/tenant/v1"),
-		Tenant: app.TenantChain(engine.Group("/api/tenant/v1"), issuer),
-		MCP:    app.MCPChain(engine.Group("/api/tenant/v1/mcp"), issuer, keys),
+		Tenant: app.TenantChain(engine.Group("/api/tenant/v1"), issuer, app.NewTenantLookup(h.Platform)),
+		MCP:    app.MCPChain(engine.Group("/api/tenant/v1/mcp"), issuer, keys, app.NewTenantLookup(h.Platform)),
 	}
 	account.RegisterPublic(routeGroups.Public)
 	account.Register(routeGroups.Tenant)

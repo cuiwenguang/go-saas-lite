@@ -1,0 +1,224 @@
+/* ============================================================
+ * 全局唯一 Element 变量覆盖处（CONVENTIONS-FRONTEND §6）
+ * --brand   = 品牌标识色（logo / 图表 / 强调文字 / 大面积品牌区）
+ * --brand-strong = 动作色（实底按钮、气泡等，比 logo 深一档）
+ *
+ * ⚠️ 权重约定：dev 模式下 Element 的样式是「按需注入」的，会排在本文件之后
+ *    （见 CONVENTIONS-FRONTEND §6），同权重会被它盖掉。所以本文件所有
+ *    覆盖 Element 的选择器都额外加一级权重：变量用 `:root:root`，
+ *    组件规则用 `html ` 前缀。删掉这些前缀 = dev 下主题失效。
+ * ============================================================ */
+
+:root:root {
+  /* 品牌标识色 = logo 色（favicon / .tint-0 同值）：用于 logo、图表、强调文字 */
+  --brand: #534ab7;
+  /* 动作色：实底按钮 / 选中实底比 logo 深一档，拉开层次（白字对比 8.6:1） */
+  --brand-strong: #453c9e;
+
+  /* 主色 + 派生色阶（Element 按此生成 hover / disabled / 浅底色） */
+  --el-color-primary: var(--brand-strong);
+  /* Element 内部按 rgb 通道做透明叠加，不覆盖会残留默认蓝 rgba(64,158,255) */
+  --el-color-primary-rgb: 69, 60, 158;
+  --el-color-primary-light-3: color-mix(in srgb, var(--brand-strong) 70%, #fff);
+  --el-color-primary-light-5: color-mix(in srgb, var(--brand-strong) 50%, #fff);
+  --el-color-primary-light-7: color-mix(in srgb, var(--brand-strong) 30%, #fff);
+  --el-color-primary-light-8: color-mix(in srgb, var(--brand-strong) 20%, #fff);
+  --el-color-primary-light-9: color-mix(in srgb, var(--brand-strong) 9%, #fff);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--brand-strong) 80%, #000);
+
+  /* 圆角放大：4 -> 8，观感立刻不一样 */
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+
+  /* 边框整体弱化 */
+  --el-border-color: #e5e7eb;
+  --el-border-color-light: #eef0f3;
+  --el-border-color-lighter: #f3f4f6;
+  --el-fill-color-light: #f7f8fa;
+  --el-fill-color-lighter: #fafafa;
+
+  /* 文字对比拉高，去掉灰蒙蒙 */
+  --el-text-color-primary: #111827;
+  --el-text-color-regular: #4b5563;
+  --el-text-color-secondary: #9ca3af;
+
+  --el-font-family: "Inter", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", sans-serif;
+
+  /* 表格：去灰底表头、竖线弱化 */
+  --el-table-header-bg-color: transparent;
+  --el-table-header-text-color: #111827;
+  --el-table-row-hover-bg-color: #f7f8fa;
+  --el-table-border-color: #f3f4f6;
+
+  /* 页面底色（body），卡片白底浮在上面形成层次 */
+  --page-bg: #f8fafc;
+}
+
+html.dark:root {
+  --brand: #9992dd;
+  --brand-strong: #6f65cf;
+  --el-color-primary: var(--brand-strong);
+  --el-color-primary-rgb: 111, 101, 207;
+  --el-color-primary-light-3: color-mix(in srgb, var(--brand-strong) 70%, #1f2430);
+  --el-color-primary-light-5: color-mix(in srgb, var(--brand-strong) 50%, #1f2430);
+  --el-color-primary-light-7: color-mix(in srgb, var(--brand-strong) 30%, #1f2430);
+  --el-color-primary-light-8: color-mix(in srgb, var(--brand-strong) 20%, #1f2430);
+  --el-color-primary-light-9: color-mix(in srgb, var(--brand-strong) 12%, #1f2430);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--brand-strong) 85%, #fff);
+
+  --el-border-color: #2a3040;
+  --el-border-color-light: #232836;
+  --el-border-color-lighter: #1e2330;
+  --el-fill-color-light: #1a1f2b;
+  --el-fill-color-lighter: #171b26;
+
+  --el-table-row-hover-bg-color: #1a1f2b;
+  --el-table-border-color: #232836;
+
+  --page-bg: #111520;
+}
+
+body {
+  /* Element Plus 不带全局 reset，默认 margin 必须归零 */
+  margin: 0;
+  padding: 0;
+  background: var(--page-bg);
+  font-family: var(--el-font-family);
+  color: var(--el-text-color-primary);
+}
+
+/* ---------- 布局基线（CONVENTIONS-FRONTEND §6 间距尺度） ---------- */
+
+#app { height: 100vh; }
+
+.page {
+  padding: 20px 24px 40px;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 16px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.toolbar-spacer { flex: 1; }
+
+/* ---------- 组件全局样式（Element 变量盖不到的部分，均加 html 前缀提权重） ---------- */
+
+/* 菜单：左侧竖条高亮 -> 圆角 pill */
+html .el-menu {
+  border-right: none;
+  background: transparent;
+}
+html .el-menu-item {
+  border-radius: 8px;
+  margin: 2px 10px;
+  height: 44px;
+  color: var(--el-text-color-regular);
+}
+html .el-menu-item:hover {
+  background: var(--el-fill-color-light);
+}
+html .el-menu-item.is-active {
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+}
+
+/* 折叠态：去掉水平 margin，图标在 64px 内居中，避免挤压变形 */
+html .el-menu--collapse .el-menu-item {
+  margin: 2px 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+}
+
+/* 弹窗：圆角 + 头部去分割线 */
+html .el-dialog {
+  border-radius: 12px;
+  --el-dialog-padding-primary: 20px;
+}
+html .el-dialog__header {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+html .el-dialog__title {
+  font-size: 16px;
+  font-weight: 500;
+}
+
+/* 卡片：无阴影 + 细边框 + 大圆角 */
+html .el-card {
+  border-radius: 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  --el-card-padding: 20px;
+}
+
+/* 数字列等宽，金额 / ID 不抖动 */
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 状态 pill：软底色 + 圆点，替代默认方角 tag（用法：type 驱动颜色，class 加 status-pill） */
+html .status-pill {
+  border: none;
+  border-radius: 999px;
+  padding: 0 10px;
+  height: 22px;
+  line-height: 22px;
+}
+html .status-pill::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  margin-right: 5px;
+  vertical-align: 1px;
+}
+
+/* 表格：密度收紧一档 */
+html .el-table {
+  font-size: 13px;
+}
+html .el-table .cell {
+  line-height: 1.5;
+}
+html .el-table td.el-table__cell {
+  padding: 7px 0;
+}
+html .el-table th.el-table__cell {
+  padding: 6px 0;
+}
+
+/* 身份色块：首字母头像按名称散列取色（局部色板，仅此处允许硬编码色值） */
+html .tint-0 { background: #eeedfe; color: #534ab7; }
+html .tint-1 { background: #e6f1fb; color: #185fa5; }
+html .tint-2 { background: #eaf3de; color: #3b6d11; }
+html .tint-3 { background: #faeeda; color: #854f0b; }
+html .tint-4 { background: #fbeaf0; color: #993556; }
+html .tint-5 { background: #e1f5ee; color: #0f6e56; }
+html.dark .tint-0 { background: #2a2650; color: #cecbf6; }
+html.dark .tint-1 { background: #17304a; color: #b5d4f4; }
+html.dark .tint-2 { background: #24330f; color: #c0dd97; }
+html.dark .tint-3 { background: #3a2c12; color: #fac775; }
+html.dark .tint-4 { background: #3c1f2c; color: #f4c0d1; }
+html.dark .tint-5 { background: #0f2e26; color: #9fe1cb; }
+
+/* 分页居右 */
+.page-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}

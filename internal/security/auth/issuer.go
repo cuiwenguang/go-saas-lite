@@ -11,12 +11,22 @@ import (
 	"github.com/cuiwenguang/go-saas-lite/pkg/tenancy"
 )
 
-// Claims 是访问令牌载荷。权限集合不进 JWT，求值走 pkg/authz。
+// 令牌类型：access 用于访问业务接口，refresh 只用于换取新 access。
+// refresh 令牌不能进业务接口，由 auth.Guard 拒绝。
+const (
+	TokenAccess  = "access"
+	TokenRefresh = "refresh"
+)
+
+// Claims 是访问令牌载荷。权限集合不进 JWT，求值走 internal/security/authz。
 type Claims struct {
 	TenantID  string `json:"tenant_id,omitempty"`
 	ClientID  string `json:"client_id,omitempty"`
 	ActorType string `json:"actor_type"`
 	Scope     string `json:"scope,omitempty"`
+	TokenType string `json:"typ,omitempty"`
+	// Email 是操作人邮箱，仅用于审计展示，不参与授权判定。
+	Email string `json:"email,omitempty"`
 
 	jwt.RegisteredClaims
 }
@@ -77,7 +87,13 @@ type IssueOptions struct {
 	TenantID string
 	ClientID string
 	Scope    string
-	TTL      time.Duration
+	// TokenType 取 TokenAccess / TokenRefresh；空值按 access 处理，兼容历史令牌。
+	TokenType string
+	// JTI 指定载荷 id；为空时自动生成。调用方需要持久化 refresh 令牌时显式传入。
+	JTI string
+	// Email 是操作人邮箱，仅用于审计展示。
+	Email string
+	TTL   time.Duration
 }
 
 // AccessTTL 返回默认访问令牌有效期。
@@ -102,12 +118,19 @@ func (i *Issuer) Issue(opts IssueOptions) (string, error) {
 		ttl = i.accessTTL
 	}
 
+	jti := opts.JTI
+	if jti == "" {
+		jti = uuid.Must(uuid.NewV7()).String()
+	}
+
 	now := i.now()
 	claims := Claims{
 		TenantID:  opts.TenantID,
 		ClientID:  opts.ClientID,
 		ActorType: string(opts.Actor),
 		Scope:     opts.Scope,
+		TokenType: opts.TokenType,
+		Email:     opts.Email,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    i.issuer,
 			Subject:   opts.Subject,
@@ -115,7 +138,7 @@ func (i *Issuer) Issue(opts IssueOptions) (string, error) {
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(now),
 			NotBefore: jwt.NewNumericDate(now),
-			ID:        uuid.Must(uuid.NewV7()).String(),
+			ID:        jti,
 		},
 	}
 

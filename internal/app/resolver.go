@@ -1,9 +1,9 @@
 package app
 
 import (
-	"context"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -13,13 +13,8 @@ import (
 	"github.com/cuiwenguang/go-saas-lite/pkg/tenancy"
 )
 
-// tenantLookup 用平台库把域名 / 子域名 / ID 解析为租户。
-type tenantLookup interface {
-	ResolveTenant(ctx context.Context, key string) (tenantID string, status string, err error)
-}
-
 // TenantResolver 是免鉴权链路的租户解析：优先 X-Tenant-Id，其次子域名。
-func TenantResolver(lookup tenantLookup, baseDomain string) gin.HandlerFunc {
+func TenantResolver(lookup TenantLookup, baseDomain string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		key := c.GetHeader("X-Tenant-Id")
 		if key == "" && baseDomain != "" {
@@ -38,31 +33,21 @@ func TenantResolver(lookup tenantLookup, baseDomain string) gin.HandlerFunc {
 			return
 		}
 
-		tenantID, status, err := lookup.ResolveTenant(c.Request.Context(), key)
+		info, err := lookup.ResolveTenant(c.Request.Context(), key)
 		if err != nil {
 			response.Fail(c, err)
 			return
 		}
-		switch status {
-		case "pending":
-			response.Fail(c, apperr.New(apperr.CodeTenantNotReady, "tenant is not ready"))
-			return
-		case "suspended":
-			response.Fail(c, apperr.New(apperr.CodeTenantDisabled, "tenant is disabled"))
-			return
-		case "expired":
-			response.Fail(c, apperr.New(apperr.CodeTenantExpired, "tenant is expired"))
-			return
-		case "archived":
-			response.Fail(c, apperr.New(apperr.CodeTenantNotFound, "tenant not found"))
+		if stateErr := tenantStateError(effectiveTenantStatus(info.Status, info.ExpireAt, time.Now())); stateErr != nil {
+			response.Fail(c, stateErr)
 			return
 		}
 
 		ctx := tenancy.WithScope(c.Request.Context(), tenancy.Scope{
-			TenantID: tenantID,
+			TenantID: info.ID,
 			Actor:    tenancy.ActorTenant,
 		})
-		ctx = obs.WithLogAttrs(ctx, slog.String("tenant_id", tenantID))
+		ctx = obs.WithLogAttrs(ctx, slog.String("tenant_id", info.ID))
 		c.Request = c.Request.WithContext(ctx)
 
 		c.Next()

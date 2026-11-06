@@ -31,6 +31,8 @@ type Scope struct {
 	ClientID string    // Web 可为空；OAuth Agent 为 client_id；API Key 为 apikey:{id}
 	Actor    ActorType // platform | tenant
 	Role     string    // 平台侧角色（owner / viewer），租户侧为空
+	// ActorEmail 仅用于审计日志展示操作人，不参与授权判定。
+	ActorEmail string
 }
 
 type scopeKey struct{}

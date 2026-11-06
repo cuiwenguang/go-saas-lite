@@ -22,6 +22,8 @@ const maintenanceLockKey = "worker:lock:maintenance"
 type Options struct {
 	Interval    time.Duration
 	CoolingDays int
+	// AuditRetentionDays 为 0 时不清审计日志。
+	AuditRetentionDays int
 	// Cleaners 是业务侧注册的数据清理钩子（readme 1.4）。
 	Cleaners []Cleaner
 }
@@ -145,7 +147,76 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		w.log.InfoContext(ctx, "archived tenants purged", "count", purged)
 	}
 
+	auditPurged, err := w.PurgeAudit(ctx)
+	if err != nil {
+		return err
+	}
+	if auditPurged > 0 {
+		w.log.InfoContext(ctx, "audit logs purged", "count", auditPurged)
+	}
+
+	expired, err := w.ExpireTenants(ctx)
+	if err != nil {
+		return err
+	}
+	if expired > 0 {
+		w.log.InfoContext(ctx, "tenants marked expired", "count", expired)
+	}
+
 	return nil
+}
+
+// ExpireTenants 把过了 expire_at 的 active 租户流转为 expired，返回处理数量。
+// 请求侧另有读时判定（internal/app/tenantgate.go），这里只负责让数据库状态跟上。
+func (w *Worker) ExpireTenants(ctx context.Context) (int64, error) {
+	cutoff := w.now()
+
+	var expired int64
+	err := w.platform.Tx(ctx, func(tx tenancy.Tx) error {
+		if err := tx.Model(&tenantRecord{}).
+			Where("status = ? AND expire_at IS NOT NULL AND expire_at < ?", "active", cutoff).
+			Count(&expired); err != nil {
+			return err
+		}
+		if expired == 0 {
+			return nil
+		}
+
+		return tx.Where("status = ? AND expire_at IS NOT NULL AND expire_at < ?", "active", cutoff).
+			Update(&tenantRecord{}, map[string]any{"status": "expired"})
+	})
+	if err != nil {
+		return 0, fmt.Errorf("worker: expire tenants: %w", err)
+	}
+
+	return expired, nil
+}
+
+// PurgeAudit 删除超过保留期的审计日志，返回删除条数。
+// 保留天数来自配置（audit.retention_days），0 表示不清理。
+func (w *Worker) PurgeAudit(ctx context.Context) (int64, error) {
+	if w.opts.AuditRetentionDays <= 0 {
+		return 0, nil
+	}
+
+	cutoff := w.now().AddDate(0, 0, -w.opts.AuditRetentionDays)
+
+	var deleted int64
+	err := w.platform.Tx(ctx, func(tx tenancy.Tx) error {
+		if err := tx.Model(&auditRecord{}).Where("created_at < ?", cutoff).Count(&deleted); err != nil {
+			return err
+		}
+		if deleted == 0 {
+			return nil
+		}
+
+		return tx.Where("created_at < ?", cutoff).Delete(&auditRecord{})
+	})
+	if err != nil {
+		return 0, fmt.Errorf("worker: purge audit logs: %w", err)
+	}
+
+	return deleted, nil
 }
 
 // PurgeArchived 清理超过冷却期的归档租户，返回处理数量。
@@ -256,6 +327,13 @@ type tenantRecord struct {
 }
 
 func (tenantRecord) TableName() string { return "tenants" }
+
+// auditRecord 只用于清理，字段按需保留。
+type auditRecord struct {
+	ID string `gorm:"column:id;primaryKey"`
+}
+
+func (auditRecord) TableName() string { return "system_operation_log" }
 
 type userRecord struct {
 	ID       string `gorm:"column:id;primaryKey"`

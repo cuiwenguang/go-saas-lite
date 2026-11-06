@@ -1,12 +1,16 @@
 package quota
 
+import "time"
+
 // Plan 映射平台组 plans 表。
 type Plan struct {
-	ID      string `gorm:"column:id;primaryKey"`
-	Code    string `gorm:"column:code"`
-	Name    string `gorm:"column:name"`
-	Quota   string `gorm:"column:quota"`
-	Enabled bool   `gorm:"column:enabled"`
+	ID        string    `gorm:"column:id;primaryKey"`
+	Code      string    `gorm:"column:code"`
+	Name      string    `gorm:"column:name"`
+	Quota     string    `gorm:"column:quota"`
+	Enabled   bool      `gorm:"column:enabled"`
+	CreatedAt time.Time `gorm:"column:created_at"`
+	UpdatedAt time.Time `gorm:"column:updated_at"`
 }
 
 // TableName 固定表名。

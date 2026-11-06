@@ -21,6 +21,8 @@ log:
   level: debug
 auth:
   access_ttl_seconds: 120
+audit:
+  retention_days: 45
 `)
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -46,6 +48,9 @@ auth:
 	}
 	if cfg.Auth.AccessTTLSeconds != 120 {
 		t.Fatalf("auth ttl: want 120, got %d", cfg.Auth.AccessTTLSeconds)
+	}
+	if cfg.Audit.RetentionDays != 45 {
+		t.Fatalf("audit retention: want 45, got %d", cfg.Audit.RetentionDays)
 	}
 	if cfg.Database.PlatformDSN != "postgres://platform" || cfg.Database.TenantDSN != "postgres://tenant" {
 		t.Fatalf("dsn env not bound: %+v", cfg.Database)

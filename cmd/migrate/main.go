@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/cuiwenguang/go-saas-lite/internal/platform/account"
-	"github.com/cuiwenguang/go-saas-lite/internal/platform/tenant"
+	"github.com/cuiwenguang/go-saas-lite/internal/platform/tenants"
 	"github.com/cuiwenguang/go-saas-lite/migrations"
 	"github.com/cuiwenguang/go-saas-lite/pkg/migrate"
 	"github.com/cuiwenguang/go-saas-lite/pkg/tenancy"
@@ -92,7 +92,7 @@ func run(dsn, groupName, command string, allTenants, syncRoles bool, adminSeed s
 			return openErr
 		}
 
-		synced, syncErr := tenant.SyncBuiltinRoles(ctx, tenancy.NewPlatformDB(db), tenancy.NewDB(tenantGorm))
+		synced, syncErr := tenants.SyncBuiltinRoles(ctx, tenancy.NewPlatformDB(db), tenancy.NewDB(tenantGorm))
 		if syncErr != nil {
 			return syncErr
 		}

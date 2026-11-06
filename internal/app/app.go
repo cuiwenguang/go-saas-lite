@@ -19,7 +19,6 @@ import (
 	"github.com/cuiwenguang/go-saas-lite/internal/tenant"
 	"github.com/cuiwenguang/go-saas-lite/internal/worker"
 	"github.com/cuiwenguang/go-saas-lite/pkg/obs"
-	"github.com/cuiwenguang/go-saas-lite/pkg/tenancy"
 )
 
 // New 组装 API 进程的依赖图。
@@ -37,7 +36,7 @@ func New(cfg Config) fx.Option {
 		quota.Module(),
 		mcp.Module(),
 		oauth.Module(),
-		platform.Module(),
+		platform.Module(platform.Options{SecureCookies: cfg.App.Env != "dev"}),
 		tenant.Module(),
 
 		// dev 下把后台 worker 一并挂到 api 进程，免去同时起多个服务。
@@ -48,7 +47,7 @@ func New(cfg Config) fx.Option {
 			obs.NewMetrics,
 			obs.NewHealth,
 			newTracerProvider,
-			fx.Annotate(newTenantLookup, fx.As(new(tenantLookup))),
+			fx.Annotate(NewTenantLookup, fx.As(new(TenantLookup))),
 			NewRouter,
 			NewServer,
 		),
@@ -72,8 +71,9 @@ func optionalDevWorker(cfg Config) fx.Option {
 
 	return fx.Options(
 		fx.Supply(worker.Options{
-			Interval:    time.Duration(cfg.Worker.IntervalSeconds) * time.Second,
-			CoolingDays: cfg.Worker.CoolingDays,
+			Interval:           time.Duration(cfg.Worker.IntervalSeconds) * time.Second,
+			CoolingDays:        cfg.Worker.CoolingDays,
+			AuditRetentionDays: cfg.Audit.RetentionDays,
 		}),
 		fx.Provide(worker.New),
 		fx.Invoke(func(*worker.Worker) {}),
@@ -105,10 +105,6 @@ func newIssuer(cfg Config) *auth.Issuer {
 		cfg.Auth.IssuerName,
 		auth.WithAccessTTL(time.Duration(cfg.Auth.AccessTTLSeconds)*time.Second),
 	)
-}
-
-func newTenantLookup(platform tenancy.PlatformDB) tenantLookup {
-	return pgTenantLookup{platform: platform}
 }
 
 func newTracerProvider(lc fx.Lifecycle, cfg Config) (*trace.TracerProvider, error) {

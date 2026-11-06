@@ -40,3 +40,6 @@ worker:
   interval_seconds: 60
   cooling_days: 7   # 归档租户数据清理的冷却期
   # app.env=dev 时 api 进程会自动附带启动 worker，无需单独起 cmd/worker。
+
+audit:
+  retention_days: 90   # 审计日志保留天数（worker 每日清理更早的记录）

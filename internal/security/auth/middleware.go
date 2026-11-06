@@ -53,16 +53,23 @@ func Authenticate(c *gin.Context, issuer *Issuer, rule Rule) (tenancy.Scope, boo
 		return tenancy.Scope{}, false
 	}
 
+	// refresh 令牌只能用于换取新 access，不能进业务接口。
+	if claims.TokenType == TokenRefresh {
+		response.Fail(c, apperr.New(apperr.CodeInvalidToken, "refresh token cannot access this endpoint"))
+		return tenancy.Scope{}, false
+	}
+
 	if claims.Actor() != rule.Actor {
 		response.Fail(c, apperr.New(apperr.CodeActorMismatch, "token actor is not allowed on this endpoint"))
 		return tenancy.Scope{}, false
 	}
 
 	scope := tenancy.Scope{
-		TenantID: claims.TenantID,
-		UserID:   claims.Subject,
-		ClientID: claims.ClientID,
-		Actor:    claims.Actor(),
+		TenantID:   claims.TenantID,
+		UserID:     claims.Subject,
+		ClientID:   claims.ClientID,
+		Actor:      claims.Actor(),
+		ActorEmail: claims.Email,
 	}
 	if scope.Actor == tenancy.ActorPlatform {
 		scope.Role = claims.Scope
