@@ -1,0 +1,42 @@
+# 进程级配置：yaml + 环境变量（SAAS_ 前缀，__ 表示层级），重启生效。
+app:
+  name: go-saas-lite
+  env: dev
+
+server:
+  addr: ":8080"
+  read_header_timeout_sec: 5
+  read_timeout_sec: 10
+  write_timeout_sec: 30
+  idle_timeout_sec: 60
+  shutdown_timeout_sec: 15
+  allowed_origins: []
+
+log:
+  level: info
+  format: text
+
+trace:
+  enabled: true
+  exporter: none   # none | stdout
+
+metrics:
+  enabled: true
+
+# 数据库与 Redis 连接：dev 默认值写在这里，本地可直接启动；
+# 生产用环境变量覆盖：SAAS_DATABASE__PLATFORM_DSN / SAAS_DATABASE__TENANT_DSN / SAAS_REDIS__ADDR
+database:
+  platform_dsn: "postgres://postgres:123456@127.0.0.1:5432/saas_test?sslmode=disable"
+  tenant_dsn: "postgres://postgres:123456@127.0.0.1:5432/saas_test?sslmode=disable"
+  max_open_conns: 20
+  max_idle_conns: 5
+
+redis:
+  addr: "127.0.0.1:6379"   # 为空时不启用缓存与失效广播
+  password: ""
+  db: 0
+
+worker:
+  interval_seconds: 60
+  cooling_days: 7   # 归档租户数据清理的冷却期
+  # app.env=dev 时 api 进程会自动附带启动 worker，无需单独起 cmd/worker。
