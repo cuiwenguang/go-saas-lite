@@ -18,11 +18,16 @@ export const PERM = {
   userCreate: "user:create",
   userUpdate: "user:update",
   userDelete: "user:delete",
+  roleRead: "role:read",
   apiKeyRead: "apikey:read",
   apiKeyCreate: "apikey:create",
   apiKeyRevoke: "apikey:revoke",
   mcpRead: "mcp:read",
   mcpUpdate: "mcp:update",
+  oauthGrantRead: "oauth.grant:read",
+  oauthGrantRevoke: "oauth.grant:revoke",
+  tenantConfRead: "tenantconf:read",
+  tenantConfUpdate: "tenantconf:update",
 } as const;
 
 export type Perm = (typeof PERM)[keyof typeof PERM];

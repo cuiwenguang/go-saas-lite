@@ -10,11 +10,13 @@ import (
 	"go.uber.org/fx"
 
 	"github.com/cuiwenguang/go-saas-lite/internal/mcp"
+	mcpadmin "github.com/cuiwenguang/go-saas-lite/internal/mcp/admin"
 	"github.com/cuiwenguang/go-saas-lite/internal/platform"
 	"github.com/cuiwenguang/go-saas-lite/internal/quota"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/apikey"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/auth"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/authz"
+	"github.com/cuiwenguang/go-saas-lite/internal/security/identity"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/oauth"
 	"github.com/cuiwenguang/go-saas-lite/internal/tenant"
 	"github.com/cuiwenguang/go-saas-lite/internal/worker"
@@ -33,11 +35,13 @@ func New(cfg Config) fx.Option {
 
 		authz.Module(),
 		apikey.Module(),
+		identity.Module(),
 		quota.Module(),
-		mcp.Module(),
+		mcp.Module(mcp.ModuleOptions{CredentialKey: cfg.MCP.CredentialKey}),
+		mcpadmin.Module(),
 		oauth.Module(),
 		platform.Module(platform.Options{SecureCookies: cfg.App.Env != "dev"}),
-		tenant.Module(),
+		tenant.Module(tenant.Options{SecureCookies: cfg.App.Env != "dev"}),
 
 		// dev 下把后台 worker 一并挂到 api 进程，免去同时起多个服务。
 		optionalDevWorker(cfg),

@@ -18,6 +18,7 @@ const (
 	TableOAuthClients       = "oauth_clients"
 	TableAPIKeys            = "api_keys"
 	TableSystemOperationLog = "system_operation_log"
+	TableUserIdentities     = "user_identities"
 )
 
 // platformTables 是平台组白名单：这些表只能经 PlatformDB 访问，永不注入 tenant_id。
@@ -29,6 +30,7 @@ var platformTables = []string{
 	TableSystemOperationLog,
 	TableTenants,
 	TableUsageDaily,
+	TableUserIdentities,
 }
 
 // PlatformTables 返回平台组表名（拷贝，防止调用方修改）。

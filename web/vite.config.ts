@@ -52,6 +52,8 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    /* 本地验证子域名租户：demo.localhost:5199 会被浏览器按回环处理 */
+    allowedHosts: [".localhost"],
     proxy: {
       // 对接真实后端时（npm run dev:api），API 走代理；mock 模式不发起真实请求
       "/api": { target: "http://127.0.0.1:8080", changeOrigin: false },

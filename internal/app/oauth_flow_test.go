@@ -56,7 +56,7 @@ func newFullFixture(t *testing.T) *fullFixture {
 	keys := apikey.NewService(h.Platform)
 	authorizer := authz.NewService(authz.NewGormSource(h.Tenant))
 
-	svc := tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform))
+	svc := tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform), h.Identity())
 	hex := strings.ReplaceAll(uuid.Must(uuid.NewV7()).String(), "-", "")
 	email := "owner-" + hex[len(hex)-8:] + "@oauth.test"
 	password := "password123"
@@ -73,7 +73,7 @@ func newFullFixture(t *testing.T) *fullFixture {
 		t.Fatalf("create tenant: %v", err)
 	}
 
-	tenantAccount := tenantaccount.NewHandler(tenantaccount.NewService(h.Tenant, issuer, keys), authorizer)
+	tenantAccount := tenantaccount.NewHandler(tenantaccount.NewService(h.Tenant, h.Platform, issuer, keys, h.Identity()), authorizer, tenantaccount.Options{})
 	platformH := platformaccount.NewHandler(platformaccount.NewService(h.Platform, issuer, audit.NewService(h.Platform)), platformaccount.Options{})
 
 	var oauthHandler *oauth.Handler
@@ -92,13 +92,14 @@ func newFullFixture(t *testing.T) *fullFixture {
 	public := engine.Group("/api/tenant/v1")
 	routeGroups := routes.Routes{
 		Public:         public,
+		TenantAuth:     engine.Group("/api/tenant/v1"),
 		PlatformPublic: engine.Group("/api/platform/v1"),
 		Tenant:         app.TenantChain(engine.Group("/api/tenant/v1"), issuer, app.NewTenantLookup(h.Platform)),
 		Platform:       app.PlatformChain(engine.Group("/api/platform/v1"), issuer),
 		MCP:            app.MCPChain(engine.Group("/api/tenant/v1/mcp"), issuer, keys, app.NewTenantLookup(h.Platform)),
 	}
 
-	tenantAccount.RegisterPublic(routeGroups.Public)
+	tenantAccount.RegisterPublic(routeGroups.TenantAuth)
 	tenantAccount.Register(routeGroups.Tenant)
 	platformH.RegisterPublic(routeGroups.PlatformPublic)
 	tenants.NewHandler(svc).Register(routeGroups.Platform)
@@ -140,7 +141,6 @@ func (f *fullFixture) webToken(t *testing.T) string {
 	payload, _ := json.Marshal(map[string]string{"email": f.email, "password": f.password})
 	req := httptest.NewRequest(http.MethodPost, "/api/tenant/v1/auth/login", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Tenant-Id", f.tenantID)
 
 	rec := httptest.NewRecorder()
 	f.engine.ServeHTTP(rec, req)
@@ -191,7 +191,7 @@ func TestPlatformLoginAndOwnerWrite(t *testing.T) {
 
 	createBody, _ := json.Marshal(map[string]any{
 		"code": "p-" + hex[len(hex)-10:], "name": "P", "timezone": "UTC", "locale": "zh-CN",
-		"admin_email": "admin@p.test",
+		"admin_email": "admin-" + hex[len(hex)-8:] + "@p.test",
 	})
 	createReq := httptest.NewRequest(http.MethodPost, "/api/platform/v1/tenants", bytes.NewReader(createBody))
 	createReq.Header.Set("Content-Type", "application/json")

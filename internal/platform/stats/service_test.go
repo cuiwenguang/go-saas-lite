@@ -19,7 +19,7 @@ func TestOverviewAndUsageTop(t *testing.T) {
 	ctx := context.Background()
 	service := stats.NewService(h.Platform)
 
-	tenantService := tenants.NewService(h.Platform, h.Tenant, nil)
+	tenantService := tenants.NewService(h.Platform, h.Tenant, nil, h.Identity())
 	created, _, err := tenantService.Create(ctx, tenants.CreateInput{
 		Code:          "stats-" + strings.ReplaceAll(uuid.Must(uuid.NewV7()).String(), "-", "")[:10],
 		Name:          "Stats Tenant",

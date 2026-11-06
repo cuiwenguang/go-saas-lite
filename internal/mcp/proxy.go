@@ -56,7 +56,11 @@ func (g *Gateway) proxyCall(ctx context.Context, name string, args json.RawMessa
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	if server.Credential != "" {
-		req.Header.Set("Authorization", "Bearer "+server.Credential)
+		credential, err := g.cipher.Decrypt(server.Credential)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt upstream credential: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+credential)
 	}
 
 	resp, err := g.client.Do(req)

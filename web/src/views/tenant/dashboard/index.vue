@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Coin, Connection, DataLine, User } from "@element-plus/icons-vue";
+import { Connection, DataLine, Key, User } from "@element-plus/icons-vue";
 import { tenantStats } from "@/shared/api/tenant";
 import { cssVar, fmtNumber, pct } from "@/shared/utils/format";
 import StatCard from "@/shared/components/StatCard.vue";
@@ -11,18 +11,53 @@ import type { EChartsCoreOption } from "echarts/core";
 const auth = useAuthStore();
 const stats = ref<TenantStats | null>(null);
 
-onMounted(async () => {
+async function load() {
   stats.value = await tenantStats();
-});
+}
+onMounted(load);
+
+/** 套餐限额在 jsonb 里，0 表示不限 */
+function quotaOf(key: string) {
+  const raw = stats.value?.plan.quota?.[key];
+
+  return typeof raw === "number" ? raw : 0;
+}
 
 const cards = computed(() => {
   if (!stats.value) return [];
-  const { usage, quota } = stats.value;
+  const { members, usage, plan } = stats.value;
+  const maxUsers = plan.max_users;
+  const maxCalls = quotaOf("mcp_calls");
+
   return [
-    { label: "成员", value: usage.users, sub: `上限 ${quota.max_users || "不限"}`, icon: User, progress: pct(usage.users, quota.max_users) },
-    { label: "MCP 调用（本月）", value: usage.mcp_calls, sub: `上限 ${quota.mcp_calls ? fmtNumber(quota.mcp_calls) : "不限"}`, icon: Connection, progress: pct(usage.mcp_calls, quota.mcp_calls) },
-    { label: "MCP Tokens", value: usage.mcp_tokens, sub: `上限 ${quota.mcp_tokens ? fmtNumber(quota.mcp_tokens) : "不限"}`, icon: Coin, progress: pct(usage.mcp_tokens, quota.mcp_tokens) },
-    { label: "存储 (GB)", value: usage.storage_gb, sub: `上限 ${quota.storage_gb || "不限"}`, icon: DataLine, progress: pct(usage.storage_gb, quota.storage_gb) },
+    {
+      label: "成员",
+      value: members.total,
+      sub: maxUsers ? `上限 ${maxUsers}` : "不限",
+      icon: User,
+      progress: pct(members.total, maxUsers),
+    },
+    {
+      label: "调用（30 天）",
+      value: usage.calls_30d,
+      sub: maxCalls ? `上限 ${fmtNumber(maxCalls)}` : "不限",
+      icon: Connection,
+      progress: pct(usage.calls_30d, maxCalls),
+    },
+    {
+      label: "失败调用（30 天）",
+      value: usage.failed_30d,
+      sub: `平均 ${usage.avg_duration_ms_30d} ms`,
+      icon: DataLine,
+      progress: pct(usage.failed_30d, usage.calls_30d || 0),
+    },
+    {
+      label: "生效 API Key",
+      value: usage.active_api_keys,
+      sub: `${plan.name} 套餐`,
+      icon: Key,
+      progress: 0,
+    },
   ];
 });
 
@@ -67,7 +102,7 @@ const chartOption = computed<EChartsCoreOption | null>(() => {
 });
 
 const quickLinks = [
-  { title: "邀请成员", desc: "为团队添加新成员并分配角色", to: "/app/users" },
+  { title: "新建成员", desc: "为团队添加成员并分配角色", to: "/app/users" },
   { title: "新建 API Key", desc: "为脚本与集成创建访问凭证", to: "/app/api-keys" },
   { title: "配置 MCP 工具", desc: "接入上游 MCP 服务并管理工具", to: "/app/mcp" },
 ];
@@ -76,7 +111,7 @@ const quickLinks = [
 <template>
   <div class="page">
     <h1 class="page-title">总览</h1>
-    <p class="page-sub">{{ auth.tenant?.name }} · {{ auth.tenant?.plan_name }} 套餐</p>
+    <p class="page-sub">{{ auth.tenant?.name }} · {{ stats?.plan.name || auth.tenant?.plan_code }} 套餐</p>
 
     <div class="card-grid" style="margin-bottom: 16px">
       <StatCard

@@ -8,7 +8,9 @@ import "@/shared/styles/theme.css";
 import App from "./App.vue";
 import { router } from "./router.tenant";
 import { setupPermission } from "@/shared/permission/directive";
-import { setUnauthorizedHandler, setTokenProvider } from "@/shared/http/client";
+import { setRefreshHandler, setTenantProvider, setUnauthorizedHandler, setTokenProvider } from "@/shared/http/client";
+import { refreshTenantSession } from "@/shared/api/auth";
+import { currentTenantKey } from "@/shared/tenant/context";
 import { useAuthStore } from "@/shared/auth/store";
 import { useAppStore } from "@/shared/stores/app";
 
@@ -22,6 +24,18 @@ useAppStore().init();
 
 /* token 注入接线：登录后所有请求自动带 Authorization */
 setTokenProvider(() => useAuthStore().token);
+
+/* 租户标识接线：子域名 / 本地记忆解析结果，登录前也要带上 */
+setTenantProvider(() => currentTenantKey());
+
+/* 401 透明刷新：租户 refresh 令牌在 httpOnly cookie 里，前端只管拿新的 access token */
+setRefreshHandler(async () => {
+  const session = await refreshTenantSession();
+  const auth = useAuthStore();
+  auth.setToken(session.access_token);
+
+  return session.access_token;
+});
 
 setUnauthorizedHandler(() => {
   const auth = useAuthStore();

@@ -6,15 +6,19 @@ import (
 	"github.com/cuiwenguang/go-saas-lite/internal/routes"
 )
 
-// Module 装配租户用户登录与 API Key 模块。
-func Module() fx.Option {
+// Module 装配租户会话、资料与 API Key 模块。
+func Module(opts Options) fx.Option {
 	return fx.Module("tenant.account",
-		fx.Provide(NewService, NewHandler),
+		fx.Provide(
+			func() Options { return opts },
+			NewService,
+			NewHandler,
+		),
 		fx.Invoke(registerRoutes),
 	)
 }
 
 func registerRoutes(r routes.Routes, h *Handler) {
-	h.RegisterPublic(r.Public)
+	h.RegisterPublic(r.TenantAuth)
 	h.Register(r.Tenant)
 }

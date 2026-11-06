@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Component } from "vue";
-import { ArrowDown, Connection, Key, Memo, OfficeBuilding, Odometer, Tickets, User } from "@element-plus/icons-vue";
+import { ArrowDown, Connection, Key, Lock, Memo, OfficeBuilding, Odometer, Setting, Tickets, User } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { useAuthStore } from "@/shared/auth/store";
 import { useAppStore } from "@/shared/stores/app";
@@ -8,7 +8,7 @@ import { useAppStore } from "@/shared/stores/app";
 const props = defineProps<{ side: "admin" | "tenant" }>();
 
 const icons: Record<string, Component> = {
-  Odometer, OfficeBuilding, Tickets, Memo, User, Key, Connection,
+  Odometer, OfficeBuilding, Tickets, Memo, User, Key, Connection, Lock, Setting,
 };
 
 const route = useRoute();
@@ -34,10 +34,11 @@ const menus = computed<MenuItem[]>(() => {
     .filter((m) => auth.can(m.perm));
 });
 
-const roleText = computed(() => props.side === "admin" ? "平台管理员" : `${auth.tenant?.plan_name || "默认"}套餐`);
+const roleText = computed(() => props.side === "admin" ? "平台管理员" : `${auth.tenant?.plan_code || "默认"} 套餐`);
 
 function onLogout() {
-  void auth.signOut().finally(() => router.push({ name: "login" }));
+  const signOut = props.side === "admin" ? auth.signOut() : auth.signOutTenant();
+  void signOut.finally(() => router.push({ name: "login" }));
 }
 </script>
 
@@ -52,7 +53,7 @@ function onLogout() {
         </template>
         <template v-else>
           <p class="brand-name">{{ auth.tenant?.name || "租户控制台" }}</p>
-          <p class="brand-sub">{{ auth.tenant?.subdomain }}.example.com</p>
+          <p class="brand-sub">{{ auth.tenant?.subdomain || "go-saas-lite" }}</p>
         </template>
       </div>
     </div>

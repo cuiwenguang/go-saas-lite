@@ -25,6 +25,13 @@ type Config struct {
 	Worker   WorkerConfig
 	Audit    AuditConfig
 	Tenancy  TenancyConfig
+	MCP      MCPConfig
+}
+
+// MCPConfig 是 MCP 网关参数。
+type MCPConfig struct {
+	// CredentialKey 用于上游凭据的 AES-GCM 静态加密；为空时按明文存储（仅开发）。
+	CredentialKey string `koanf:"credential_key"`
 }
 
 // AuditConfig 是审计日志参数。

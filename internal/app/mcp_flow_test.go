@@ -40,7 +40,7 @@ func newMCPFixture(t *testing.T) *mcpFixture {
 	h := testutil.New(t)
 	issuer := auth.NewIssuer("test-secret", "go-saas-lite-test")
 
-	svc := tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform))
+	svc := tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform), h.Identity())
 	hex := strings.ReplaceAll(uuid.Must(uuid.NewV7()).String(), "-", "")
 	email := "admin-" + hex[len(hex)-8:] + "@mcp.test"
 	password := "password123"
@@ -59,7 +59,7 @@ func newMCPFixture(t *testing.T) *mcpFixture {
 
 	keys := apikey.NewService(h.Platform)
 	authorizer := authz.NewService(authz.NewGormSource(h.Tenant))
-	account := account.NewHandler(account.NewService(h.Tenant, issuer, keys), authorizer)
+	account := account.NewHandler(account.NewService(h.Tenant, h.Platform, issuer, keys, h.Identity()), authorizer, account.Options{})
 
 	mcpHandler := mcp.NewHandler(mcp.Options{
 		Provider:   mcp.NewGateway(h.Tenant),
@@ -70,11 +70,11 @@ func newMCPFixture(t *testing.T) *mcpFixture {
 
 	engine := gin.New()
 	routeGroups := routes.Routes{
-		Public: engine.Group("/api/tenant/v1"),
-		Tenant: app.TenantChain(engine.Group("/api/tenant/v1"), issuer, app.NewTenantLookup(h.Platform)),
-		MCP:    app.MCPChain(engine.Group("/api/tenant/v1/mcp"), issuer, keys, app.NewTenantLookup(h.Platform)),
+		TenantAuth: engine.Group("/api/tenant/v1"),
+		Tenant:     app.TenantChain(engine.Group("/api/tenant/v1"), issuer, app.NewTenantLookup(h.Platform)),
+		MCP:        app.MCPChain(engine.Group("/api/tenant/v1/mcp"), issuer, keys, app.NewTenantLookup(h.Platform)),
 	}
-	account.RegisterPublic(routeGroups.Public)
+	account.RegisterPublic(routeGroups.TenantAuth)
 	account.Register(routeGroups.Tenant)
 	routeGroups.MCP.POST("", gin.WrapH(mcpHandler))
 
@@ -87,7 +87,6 @@ func (f *mcpFixture) login(t *testing.T) string {
 	payload, _ := json.Marshal(map[string]string{"email": f.email, "password": f.password})
 	req := httptest.NewRequest(http.MethodPost, "/api/tenant/v1/auth/login", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Tenant-Id", f.tenantID)
 
 	recorder := httptest.NewRecorder()
 	f.engine.ServeHTTP(recorder, req)

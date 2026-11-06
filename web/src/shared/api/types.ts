@@ -208,9 +208,25 @@ export interface AuditLogRow {
 
 /* ---------- 租户侧 ---------- */
 
+/** 租户登录 / 刷新返回（refresh 令牌在 httpOnly cookie） */
+export interface TenantSession {
+  access_token: string
+  token_type: string
+  expires_in: number
+  must_change_password: boolean
+}
+
 export interface TenantMe {
   user: { id: string; email: string; display_name: string; roles: string[] }
-  tenant: { id: string; name: string; subdomain: string; plan_id: string; plan_name: string }
+  tenant: { id: string; name: string; subdomain?: string; plan_code: string }
+  permissions: string[]
+}
+
+/** 内置角色（只读） */
+export interface TenantRole {
+  id: string
+  code: string
+  name: string
   permissions: string[]
 }
 
@@ -220,10 +236,11 @@ export interface UserRow {
   display_name: string
   status: 'active' | 'disabled'
   roles: string[]
+  must_change_password: boolean
   created_at: string
-  last_login_at: string
 }
 
+/** 新建成员 / 重置密码的返回：初始密码只出现一次 */
 export interface InviteUserResult {
   user: UserRow
   initial_password: string
@@ -232,41 +249,79 @@ export interface InviteUserResult {
 export interface ApiKeyRow {
   id: string
   name: string
-  prefix: string
-  owner_name: string
-  status: 'active' | 'revoked'
+  key_prefix: string
+  revoked_at?: string
+  last_used_at?: string
   created_at: string
-  last_used_at: string
 }
 
 export interface CreateApiKeyResult {
   key: ApiKeyRow
   /** 一次性明文 secret，仅创建响应返回一次 */
-  secret: string
+  plain: string
 }
 
 export interface McpServerRow {
   id: string
   name: string
-  url: string
-  status: 'connected' | 'error'
+  base_url: string
+  has_credential: boolean
+  enabled: boolean
   tool_count: number
-  description: string
+  created_at: string
+  updated_at: string
 }
 
 export interface McpToolRow {
   id: string
   server_id: string
-  server_name: string
   name: string
   description: string
+  input_schema: unknown
   required_perms: string[]
   enabled: boolean
-  calls_30d: number
+  updated_at: string
 }
 
+export interface McpCallRow {
+  id: string
+  user_id: string
+  client_id: string
+  tool_name: string
+  status: string
+  duration_ms: number
+  error_code?: string
+  created_at: string
+}
+
+/** 用户对某个 MCP 客户端的授权 */
+export interface OAuthGrantRow {
+  client_id: string
+  client_name: string
+  scope: string
+  revoked_at?: string
+  created_at: string
+  updated_at: string
+}
+
+/** 租户配置项（namespace + key 唯一） */
+export interface ConfigRow {
+  namespace: string
+  key: string
+  value: string
+  updated_at: string
+}
+
+/** 租户总览：成员、套餐限额、近 30 天用量与近 7 天调用趋势 */
 export interface TenantStats {
-  usage: QuotaUsage
-  quota: Quota
+  members: { total: number; active: number }
+  plan: { code: string; name: string; max_users: number; quota: Record<string, unknown> }
+  usage: {
+    calls_30d: number
+    failed_30d: number
+    avg_duration_ms_30d: number
+    active_api_keys: number
+    metric_totals: Record<string, number>
+  }
   call_series: SeriesPoint[]
 }

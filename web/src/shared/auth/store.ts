@@ -1,7 +1,10 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import { fetchPlatformMe, fetchTenantMe, loginPlatform, loginTenant, logoutPlatform } from "@/shared/api/auth";
+import {
+  fetchPlatformMe, fetchTenantMe, loginPlatform, loginTenant, logoutPlatform, logoutTenant,
+} from "@/shared/api/auth";
 import type { PlatformRole } from "@/shared/api/types";
+import { clearTenant, setCurrentTenant } from "@/shared/tenant/context";
 
 /* 登录态：access token 只存内存（CONVENTIONS-FRONTEND §5，不落 localStorage）
  * 平台 / 租户两套身份物理隔离，登录与 /me 走各自接口 */
@@ -13,7 +16,7 @@ export const useAuthStore = defineStore("auth", () => {
   /** 仅平台侧有值：owner / viewer */
   const role = ref<PlatformRole | "">("");
   /** 仅租户侧有值：当前租户上下文 */
-  const tenant = ref<{ id: string; name: string; subdomain: string; plan_name: string } | null>(null);
+  const tenant = ref<{ id: string; name: string; subdomain: string; plan_code: string } | null>(null);
 
   const isAuthed = computed(() => token.value !== "");
 
@@ -32,7 +35,8 @@ export const useAuthStore = defineStore("auth", () => {
     const r = await loginTenant(email, password);
     token.value = r.access_token;
     await loadTenantMe();
-    return r.need_change_password;
+
+    return r.must_change_password;
   }
 
   async function loadPlatformMe() {
@@ -47,7 +51,13 @@ export const useAuthStore = defineStore("auth", () => {
     const me = await fetchTenantMe();
     displayName.value = me.user.display_name;
     permissions.value = me.permissions;
-    tenant.value = me.tenant;
+    tenant.value = {
+      id: me.tenant.id,
+      name: me.tenant.name,
+      subdomain: me.tenant.subdomain || "",
+      plan_code: me.tenant.plan_code,
+    };
+    setCurrentTenant(me.tenant.id);
   }
 
   /** 权限点判断：无 perm 参数视为公开 */
@@ -65,16 +75,27 @@ export const useAuthStore = defineStore("auth", () => {
     logout();
   }
 
+  /** 租户登出：刷新令牌在 httpOnly cookie，必须显式通知服务端 */
+  async function signOutTenant() {
+    try {
+      await logoutTenant();
+    } catch {
+      /* 同上 */
+    }
+    logout();
+  }
+
   function logout() {
     token.value = "";
     displayName.value = "";
     permissions.value = [];
     role.value = "";
     tenant.value = null;
+    clearTenant();
   }
 
   return {
     token, displayName, permissions, role, tenant, isAuthed,
-    setToken, platformLogin, tenantLogin, loadPlatformMe, loadTenantMe, can, signOut, logout,
+    setToken, platformLogin, tenantLogin, loadPlatformMe, loadTenantMe, can, signOut, signOutTenant, logout,
   };
 });

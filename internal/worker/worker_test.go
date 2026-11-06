@@ -37,7 +37,7 @@ func newWorker(h *testutil.Harness, coolingDays int) *worker.Worker {
 // 归档且超过冷却期的租户，数据要被清掉。
 func TestPurgeArchivedTenant(t *testing.T) {
 	h := testutil.New(t)
-	service := tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform))
+	service := tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform), h.Identity())
 	ctx := context.Background()
 
 	hex := strings.ReplaceAll(uuid.Must(uuid.NewV7()).String(), "-", "")
@@ -113,7 +113,7 @@ func TestPurgeArchivedTenant(t *testing.T) {
 func TestExpireTenants(t *testing.T) {
 	h := testutil.New(t)
 	ctx := context.Background()
-	service := tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform))
+	service := tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform), h.Identity())
 
 	create := func(prefix string) string {
 		hex := strings.ReplaceAll(uuid.Must(uuid.NewV7()).String(), "-", "")
@@ -221,7 +221,7 @@ func TestPurgeAuditLogs(t *testing.T) {
 // 未到冷却期的归档租户不能被清理。
 func TestPurgeSkipsTenantsInCoolingPeriod(t *testing.T) {
 	h := testutil.New(t)
-	service := tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform))
+	service := tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform), h.Identity())
 	ctx := context.Background()
 
 	hex := strings.ReplaceAll(uuid.Must(uuid.NewV7()).String(), "-", "")

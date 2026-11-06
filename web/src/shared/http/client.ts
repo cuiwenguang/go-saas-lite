@@ -4,8 +4,7 @@
  * - 401 对业务透明：回调注入，由 main 负责清态并跳登录
  *   （真实后端接入后在此挂「挂起 -> refresh -> 重放」队列）
  */
-import axios, { AxiosError, type AxiosInstance, type InternalAxiosRequestConfig } from "axios";
-import { mockAdapter } from "./mock";
+import axios, { AxiosError, type AxiosInstance, type AxiosRequestConfig, type InternalAxiosRequestConfig } from "axios";
 import { progressDone, progressStart } from "@/shared/utils/progress";
 
 export class AppError extends Error {
@@ -19,10 +18,6 @@ export class AppError extends Error {
 
 export const http: AxiosInstance = axios.create({ timeout: 15000 });
 
-if (import.meta.env.VITE_USE_MOCK !== "false") {
-  http.defaults.adapter = mockAdapter;
-}
-
 export let onUnauthorized: (() => void) | null = null;
 export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn;
@@ -32,6 +27,12 @@ export function setUnauthorizedHandler(fn: () => void) {
 let tokenProvider: (() => string) | null = null;
 export function setTokenProvider(fn: () => string) {
   tokenProvider = fn;
+}
+
+/* 租户标识注入：登录前也要带，才能确定用户属于哪个租户 */
+let tenantProvider: (() => string) | null = null;
+export function setTenantProvider(fn: () => string) {
+  tenantProvider = fn;
 }
 
 /* 401 透明刷新：挂起中的请求共用一次刷新，成功后重放原请求；
@@ -69,6 +70,10 @@ function canRefresh(config?: RetryConfig) {
 http.interceptors.request.use((config) => {
   const token = tokenProvider?.() || "";
   if (token) config.headers.Authorization = `Bearer ${token}`;
+  if (String(config.url || "").startsWith("/api/tenant/")) {
+    const tenant = tenantProvider?.() || "";
+    if (tenant) config.headers["X-Tenant-Id"] = tenant;
+  }
   progressStart();
   return config;
 });
@@ -110,15 +115,18 @@ http.interceptors.response.use(
 );
 
 /* 类型化请求助手：拦截器已解包，这里只做类型收窄 */
-export async function get<T>(url: string, params?: Record<string, unknown>): Promise<T> {
-  return (await http.get(url, { params })) as T;
+export async function get<T>(url: string, params?: Record<string, unknown>, config?: AxiosRequestConfig): Promise<T> {
+  return (await http.get(url, { params, ...config })) as T;
 }
-export async function post<T>(url: string, body?: unknown): Promise<T> {
-  return (await http.post(url, body)) as T;
+export async function post<T>(url: string, body?: unknown, config?: AxiosRequestConfig): Promise<T> {
+  return (await http.post(url, body, config)) as T;
 }
-export async function patch<T>(url: string, body?: unknown): Promise<T> {
-  return (await http.patch(url, body)) as T;
+export async function patch<T>(url: string, body?: unknown, config?: AxiosRequestConfig): Promise<T> {
+  return (await http.patch(url, body, config)) as T;
 }
-export async function del<T>(url: string): Promise<T> {
-  return (await http.delete(url)) as T;
+export async function put<T>(url: string, body?: unknown, config?: AxiosRequestConfig): Promise<T> {
+  return (await http.put(url, body, config)) as T;
+}
+export async function del<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
+  return (await http.delete(url, config)) as T;
 }

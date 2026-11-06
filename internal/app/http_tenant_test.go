@@ -32,7 +32,7 @@ func newPlatformAPI(t *testing.T) (*gin.Engine, *auth.Issuer) {
 	routeGroups := routes.Routes{
 		Platform: app.PlatformChain(engine.Group("/api/platform/v1"), issuer),
 	}
-	tenants.NewHandler(tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform))).Register(routeGroups.Platform)
+	tenants.NewHandler(tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform), h.Identity())).Register(routeGroups.Platform)
 
 	return engine, issuer
 }
@@ -65,7 +65,7 @@ func TestPlatformTenantAPI(t *testing.T) {
 		"name":        "HTTP Tenant",
 		"timezone":    "Asia/Shanghai",
 		"locale":      "zh-CN",
-		"admin_email": "admin@http.test",
+		"admin_email": "admin-" + hex[len(hex)-8:] + "@http.test",
 	})
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)

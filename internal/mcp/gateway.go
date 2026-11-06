@@ -18,12 +18,20 @@ import (
 type Gateway struct {
 	db            tenancy.DB
 	client        *http.Client
+	cipher        *Cipher
 	allowLoopback bool
 }
 
 // NewGateway 创建工具网关。
 func NewGateway(db tenancy.DB) *Gateway {
 	return &Gateway{db: db, client: &http.Client{Timeout: 30 * time.Second}}
+}
+
+// WithCipher 注入凭据解密器（未配置密钥时 cipher 为禁用状态）。
+func (g *Gateway) WithCipher(c *Cipher) *Gateway {
+	g.cipher = c
+
+	return g
 }
 
 // WithLoopback 允许上游指向回环地址（仅供测试）。

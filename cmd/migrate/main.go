@@ -7,8 +7,11 @@ import (
 	"os"
 	"strings"
 
+	"gorm.io/gorm"
+
 	"github.com/cuiwenguang/go-saas-lite/internal/platform/account"
 	"github.com/cuiwenguang/go-saas-lite/internal/platform/tenants"
+	"github.com/cuiwenguang/go-saas-lite/internal/security/identity"
 	"github.com/cuiwenguang/go-saas-lite/migrations"
 	"github.com/cuiwenguang/go-saas-lite/pkg/migrate"
 	"github.com/cuiwenguang/go-saas-lite/pkg/tenancy"
@@ -18,7 +21,7 @@ func main() {
 	var (
 		dsn        = flag.String("dsn", os.Getenv("DB_DSN"), "数据库 DSN")
 		group      = flag.String("group", "all", "迁移组：platform | tenant | all")
-		command    = flag.String("command", "up", "命令：up | status | verify")
+		command    = flag.String("command", "up", "命令：up | status | verify | repair-identities")
 		allTenants = flag.Bool("all-tenants", false, "Schema 模式：为每个租户 schema 执行租户迁移")
 		syncRoles  = flag.Bool("sync-roles", false, "执行后同步内置角色权限")
 		adminSeed  = flag.String("platform-admin", "", "初始化平台管理员，格式 email:password")
@@ -53,6 +56,10 @@ func run(dsn, groupName, command string, allTenants, syncRoles bool, adminSeed s
 		return fmt.Errorf("schema-per-tenant is not enabled in this build; run -group tenant against the shared database")
 	}
 
+	if command == "repair-identities" {
+		return repairIdentities(ctx, db, dsn)
+	}
+
 	for _, group := range groups {
 		switch command {
 		case "up":
@@ -82,7 +89,7 @@ func run(dsn, groupName, command string, allTenants, syncRoles bool, adminSeed s
 				fmt.Printf("  v%-3d %-24s %s\n", status.Version, status.Filename, mark)
 			}
 		default:
-			return fmt.Errorf("unknown command %q, want up|status|verify", command)
+			return fmt.Errorf("unknown command %q, want up|status|verify|repair-identities", command)
 		}
 	}
 
@@ -109,6 +116,25 @@ func run(dsn, groupName, command string, allTenants, syncRoles bool, adminSeed s
 		}
 		fmt.Printf("platform admin %s ensured\n", parts[0])
 	}
+
+	return nil
+}
+
+// repairIdentities 对账全局登录索引：补齐缺失行、清理指向不存在用户的脏行。
+func repairIdentities(ctx context.Context, platformGorm *gorm.DB, dsn string) error {
+	tenantGorm, err := tenancy.OpenPostgres(dsn, tenancy.WithTenantCallbacks(), tenancy.Silent())
+	if err != nil {
+		return err
+	}
+
+	service := identity.NewService(tenancy.NewPlatformDB(platformGorm), tenancy.NewDB(tenantGorm))
+	report, err := service.Repair(ctx, 200)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("identities repaired: tenants=%d scanned=%d added=%d removed=%d conflicts=%d\n",
+		report.Tenants, report.Scanned, report.Added, report.Removed, report.Conflicts)
 
 	return nil
 }

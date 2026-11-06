@@ -40,6 +40,18 @@ const routes: RouteRecordRaw[] = [
         component: () => import("@/views/tenant/mcp/index.vue"),
         meta: { title: "MCP 服务", icon: "Connection", perm: PERM.mcpRead },
       },
+      {
+        path: "grants",
+        name: "grants",
+        component: () => import("@/views/tenant/grants/index.vue"),
+        meta: { title: "Agent 授权", icon: "Lock", perm: PERM.oauthGrantRead },
+      },
+      {
+        path: "settings",
+        name: "settings",
+        component: () => import("@/views/tenant/settings/index.vue"),
+        meta: { title: "租户配置", icon: "Setting", perm: PERM.tenantConfRead },
+      },
     ],
   },
   { path: "/app/:pathMatch(.*)*", redirect: { name: "dashboard" } },

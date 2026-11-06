@@ -14,6 +14,7 @@ import (
 
 	"github.com/cuiwenguang/go-saas-lite/internal/platform/audit"
 	"github.com/cuiwenguang/go-saas-lite/internal/quota"
+	"github.com/cuiwenguang/go-saas-lite/internal/security/identity"
 	"github.com/cuiwenguang/go-saas-lite/pkg/apperr"
 	"github.com/cuiwenguang/go-saas-lite/pkg/tenancy"
 )
@@ -22,15 +23,22 @@ var codePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,63}$`)
 
 // Service 负责租户生命周期。
 type Service struct {
-	platform tenancy.PlatformDB
-	tenant   tenancy.DB
-	audit    *audit.Service
-	now      func() time.Time
+	platform   tenancy.PlatformDB
+	tenant     tenancy.DB
+	audit      *audit.Service
+	identities *identity.Service
+	now        func() time.Time
 }
 
 // NewService 创建租户服务。
-func NewService(platform tenancy.PlatformDB, tenantDB tenancy.DB, auditService *audit.Service) *Service {
-	return &Service{platform: platform, tenant: tenantDB, audit: auditService, now: time.Now}
+func NewService(platform tenancy.PlatformDB, tenantDB tenancy.DB, auditService *audit.Service, identities *identity.Service) *Service {
+	return &Service{
+		platform:   platform,
+		tenant:     tenantDB,
+		audit:      auditService,
+		identities: identities,
+		now:        time.Now,
+	}
 }
 
 // Create 执行开通流水线，返回租户与仅出现一次的初始密码。
@@ -41,6 +49,11 @@ func NewService(platform tenancy.PlatformDB, tenantDB tenancy.DB, auditService *
 //  3. 平台库置 active / succeeded。
 func (s *Service) Create(ctx context.Context, in CreateInput) (*Tenant, string, error) {
 	if err := in.validate(); err != nil {
+		return nil, "", err
+	}
+
+	// 全局唯一：邮箱已被别的租户占用时直接拒绝，避免租户建好但管理员登不进来。
+	if err := s.ensureEmailAvailable(ctx, in.AdminEmail); err != nil {
 		return nil, "", err
 	}
 
@@ -95,6 +108,12 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Tenant, string, 
 		return nil, "", apperr.Wrap(err, apperr.CodeTenantProvision, "provision tenant failed")
 	}
 	s.recordStep(ctx, tenant.ID, "tenant_bootstrapped")
+
+	if err := s.indexAdmin(ctx, tenant.ID, admin); err != nil {
+		s.markFailed(ctx, tenant.ID, err)
+		return nil, "", apperr.Wrap(err, apperr.CodeTenantProvision, "index tenant admin failed")
+	}
+	s.recordStep(ctx, tenant.ID, "identity_indexed")
 
 	activated := map[string]any{
 		"status":           StatusActive,
@@ -333,6 +352,12 @@ func (s *Service) RetryProvision(ctx context.Context, id string) (*Tenant, strin
 		return nil, "", apperr.Wrap(err, apperr.CodeTenantProvision, "provision tenant failed")
 	}
 	s.recordStep(ctx, id, "tenant_bootstrapped")
+
+	if err := s.indexAdmin(ctx, id, admin); err != nil {
+		s.markFailed(ctx, id, err)
+		return nil, "", apperr.Wrap(err, apperr.CodeTenantProvision, "index tenant admin failed")
+	}
+	s.recordStep(ctx, id, "identity_indexed")
 
 	activated := map[string]any{
 		"provision_status": ProvisionSucceeded,
@@ -599,7 +624,41 @@ func (s *Service) Archive(ctx context.Context, id string) error {
 	if _, err := s.UpdateStatus(ctx, id, StatusArchived); err != nil {
 		return err
 	}
+
+	// 索引只是登录定位器，清不掉也不会提权（登录时会复查租户状态），失败不阻塞归档。
+	if s.identities != nil {
+		_ = s.identities.RemoveTenant(ctx, id)
+	}
+
 	return nil
+}
+
+// ensureEmailAvailable 校验管理员邮箱未被其他租户占用。
+func (s *Service) ensureEmailAvailable(ctx context.Context, email string) error {
+	if s.identities == nil || email == "" {
+		return nil
+	}
+
+	_, err := s.identities.Lookup(ctx, identity.TypeEmail, email)
+	if err == nil {
+		return apperr.New(apperr.CodeConflict, "该邮箱已被其他账号使用")
+	}
+	if appErr := apperr.From(err); appErr != nil && appErr.Code == apperr.CodeNotFound {
+		return nil
+	}
+
+	return apperr.Wrap(err, apperr.CodeInternal, "check admin email")
+}
+
+// indexAdmin 把管理员邮箱登记进全局索引（失败可经开通重试或对账修复）。
+func (s *Service) indexAdmin(ctx context.Context, tenantID string, admin adminSeed) error {
+	if s.identities == nil {
+		return nil
+	}
+
+	return s.identities.Ensure(ctx, tenantID, admin.UserID, []identity.Identifier{
+		{Type: identity.TypeEmail, Value: admin.Email},
+	})
 }
 
 // recordStep 追加一条成功事件并更新当前步骤，便于定位卡在哪一步。

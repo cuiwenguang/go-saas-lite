@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"github.com/cuiwenguang/go-saas-lite/internal/security/identity"
 	"github.com/cuiwenguang/go-saas-lite/migrations"
 	"github.com/cuiwenguang/go-saas-lite/pkg/migrate"
 	"github.com/cuiwenguang/go-saas-lite/pkg/tenancy"
@@ -20,6 +21,11 @@ type Harness struct {
 	Platform     tenancy.PlatformDB
 	TenantGorm   *gorm.DB
 	PlatformGorm *gorm.DB
+}
+
+// Identity 构造全局登录索引服务，供手工装配依赖的用例使用。
+func (h *Harness) Identity() *identity.Service {
+	return identity.NewService(h.Platform, h.Tenant)
 }
 
 // New 准备测试库：连库 → 跑平台 / 租户两套迁移 → 返回门面。

@@ -4,7 +4,7 @@ import { createApiKey, listApiKeys, revokeApiKey } from "@/shared/api/tenant";
 import { PERM } from "@/shared/permission/perms";
 import { useAuthStore } from "@/shared/auth/store";
 import { fmtDateTime } from "@/shared/utils/format";
-import type { ApiKeyRow, Paged } from "@/shared/api/types";
+import type { ApiKeyRow } from "@/shared/api/types";
 import type { FormInstance, FormRules } from "element-plus";
 
 const auth = useAuthStore();
@@ -15,8 +15,8 @@ const loading = ref(false);
 async function load() {
   loading.value = true;
   try {
-    const p: Paged<ApiKeyRow> = await listApiKeys({ page: 1, page_size: 50 });
-    rows.value = p.items;
+    const r = await listApiKeys();
+    rows.value = r.items;
   } finally {
     loading.value = false;
   }
@@ -55,7 +55,7 @@ async function onCreate() {
   try {
     const r = await createApiKey(form.name);
     dialog.value = false;
-    created.value = { name: r.key.name, secret: r.secret };
+    created.value = { name: r.key.name, secret: r.plain };
     form.name = "";
     load();
   } catch (e) {
@@ -96,29 +96,28 @@ async function copySecret() {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="Key 前缀" width="180">
+        <el-table-column label="Key 前缀" width="200">
           <template #default="{ row }">
-            <code class="k-prefix num">{{ row.prefix }}…</code>
+            <code class="k-prefix num">{{ row.key_prefix }}…</code>
           </template>
         </el-table-column>
-        <el-table-column label="创建人" width="110" prop="owner_name" />
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
-            <el-tag :type="row.status === 'active' ? 'success' : 'info'" size="small" class="status-pill">
-              {{ row.status === "active" ? "生效中" : "已吊销" }}
+            <el-tag :type="row.revoked_at ? 'info' : 'success'" size="small" class="status-pill">
+              {{ row.revoked_at ? "已吊销" : "生效中" }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="创建时间" width="160">
+        <el-table-column label="创建时间" width="170">
           <template #default="{ row }"><span class="num k-sub">{{ fmtDateTime(row.created_at) }}</span></template>
         </el-table-column>
-        <el-table-column label="最近使用" width="160">
-          <template #default="{ row }"><span class="num k-sub">{{ fmtDateTime(row.last_used_at) }}</span></template>
+        <el-table-column label="最近使用" width="170">
+          <template #default="{ row }"><span class="num k-sub">{{ row.last_used_at ? fmtDateTime(row.last_used_at) : "未使用" }}</span></template>
         </el-table-column>
         <el-table-column label="操作" width="90" fixed="right">
           <template #default="{ row }">
             <el-button
-              v-if="row.status === 'active' && auth.can(PERM.apiKeyRevoke)"
+              v-if="!row.revoked_at && auth.can(PERM.apiKeyRevoke)"
               text
               type="danger"
               size="small"

@@ -6,6 +6,7 @@ import (
 
 	"github.com/cuiwenguang/go-saas-lite/internal/routes"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/auth"
+	"github.com/cuiwenguang/go-saas-lite/internal/security/oauth/grant"
 	"github.com/cuiwenguang/go-saas-lite/pkg/tenancy"
 )
 
@@ -14,6 +15,7 @@ func Module() fx.Option {
 	return fx.Module("oauth",
 		fx.Provide(newServer, NewHandler),
 		fx.Invoke(registerRoutes),
+		grant.Module(),
 	)
 }
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Plus, Search } from "@element-plus/icons-vue";
-import { inviteUser, listUsers, removeUser, setUserStatus } from "@/shared/api/tenant";
+import { createUser, listUsers, resetUserPassword, setUserRoles, updateUser } from "@/shared/api/tenant";
 import { PERM } from "@/shared/permission/perms";
 import { useAuthStore } from "@/shared/auth/store";
 import { fmtDateTime } from "@/shared/utils/format";
@@ -12,13 +12,14 @@ const auth = useAuthStore();
 const rows = ref<UserRow[]>([]);
 const total = ref(0);
 const loading = ref(false);
-const query = reactive({ page: 1, page_size: 10, keyword: "", status: "" });
+const query = reactive({ page: 1, size: 10, keyword: "", status: "" });
 
 async function load() {
   loading.value = true;
   try {
     const p: Paged<UserRow> = await listUsers({
-      ...query,
+      page: query.page,
+      size: query.size,
       keyword: query.keyword || undefined,
       status: query.status || undefined,
     });
@@ -47,29 +48,72 @@ async function onToggleStatus(row: UserRow) {
         confirmButtonText: "禁用",
       });
     }
+    await updateUser(row.id, { status: next });
     row.status = next;
-    await setUserStatus(row.id, next);
     ElMessage.success(`已${action}`);
-  } catch (e) {
-    row.status = row.status; // 还原
-    if (e instanceof Error && e.message) load();
+  } catch {
+    load();
   }
 }
 
-async function onRemove(row: UserRow) {
-  await ElMessageBox.confirm(`删除后「${row.display_name}」的所有角色绑定一并移除，确定？`, "删除成员", {
-    type: "warning",
-    confirmButtonText: "删除",
-    confirmButtonClass: "el-button--danger",
-  }).catch(() => Promise.reject());
+/* ---------- 角色调整 ---------- */
+
+const roleDialog = ref(false);
+const roleTarget = ref<UserRow | null>(null);
+const roleCodes = ref<string[]>(["member"]);
+const roleSaving = ref(false);
+
+function openRoles(row: UserRow) {
+  roleTarget.value = row;
+  roleCodes.value = [...row.roles];
+  roleDialog.value = true;
+}
+
+async function onSaveRoles() {
+  if (!roleTarget.value || roleCodes.value.length === 0) {
+    ElMessage.warning("至少保留一个角色");
+
+    return;
+  }
+  roleSaving.value = true;
   try {
-    await removeUser(row.id);
-    ElMessage.success("已删除");
+    await setUserRoles(roleTarget.value.id, roleCodes.value);
+    ElMessage.success("角色已更新");
+    roleDialog.value = false;
     load();
   } catch (e) {
-    // mock 会返回 40009：不能删除最后一个管理员
-    ElMessage.error(e instanceof Error ? e.message : "删除失败");
+    ElMessage.error(e instanceof Error ? e.message : "保存失败");
+  } finally {
+    roleSaving.value = false;
   }
+}
+
+/* ---------- 重置密码 ---------- */
+
+const resetTarget = ref<UserRow | null>(null);
+const resetPassword = ref("");
+const resetDialog = computed({
+  get: () => resetPassword.value !== "",
+  set: (v: boolean) => { if (!v) resetPassword.value = ""; },
+});
+
+async function onResetPassword(row: UserRow) {
+  await ElMessageBox.confirm(`重置后「${row.display_name}」的当前密码立即失效，并需重新设置，确定？`, "重置密码", {
+    type: "warning",
+    confirmButtonText: "重置",
+  }).catch(() => Promise.reject());
+  try {
+    const r = await resetUserPassword(row.id);
+    resetTarget.value = row;
+    resetPassword.value = r.initial_password;
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : "重置失败");
+  }
+}
+
+async function copyResetPassword() {
+  await navigator.clipboard.writeText(resetPassword.value).catch(() => undefined);
+  ElMessage.success("已复制到剪贴板");
 }
 
 /* ---------- 邀请成员 ---------- */
@@ -77,7 +121,7 @@ async function onRemove(row: UserRow) {
 const dialog = ref(false);
 const submitLoading = ref(false);
 const formRef = ref<FormInstance>();
-const form = reactive({ email: "", display_name: "", roles: "member" });
+const form = reactive({ email: "", display_name: "", role: "member" as "admin" | "member" });
 const rules: FormRules = {
   email: [
     { required: true, message: "请输入邮箱", trigger: "blur" },
@@ -97,13 +141,13 @@ async function onInvite() {
   if (!ok) return;
   submitLoading.value = true;
   try {
-    const r = await inviteUser({ email: form.email, display_name: form.display_name, roles: [form.roles] });
+    const r = await createUser({ email: form.email, display_name: form.display_name, role: form.role });
     dialog.value = false;
     invited.value = { email: r.user.email, password: r.initial_password };
-    Object.assign(form, { email: "", display_name: "", roles: "member" });
+    Object.assign(form, { email: "", display_name: "", role: "member" });
     load();
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : "邀请失败");
+    ElMessage.error(e instanceof Error ? e.message : "创建失败");
   } finally {
     submitLoading.value = false;
   }
@@ -173,21 +217,24 @@ async function copyPassword() {
             />
           </template>
         </el-table-column>
-        <el-table-column label="创建时间" width="160">
+        <el-table-column label="创建时间" width="170">
           <template #default="{ row }"><span class="num u-sub">{{ fmtDateTime(row.created_at) }}</span></template>
         </el-table-column>
-        <el-table-column label="最近登录" width="160">
-          <template #default="{ row }"><span class="num u-sub">{{ fmtDateTime(row.last_login_at) }}</span></template>
-        </el-table-column>
-        <el-table-column label="操作" width="90" fixed="right">
+        <el-table-column label="操作" width="160" fixed="right">
           <template #default="{ row }">
             <el-button
-              v-if="auth.can(PERM.userDelete)"
+              v-if="auth.can(PERM.userUpdate)"
               text
-              type="danger"
+              type="primary"
               size="small"
-              @click="onRemove(row as UserRow)"
-            >删除</el-button>
+              @click="openRoles(row as UserRow)"
+            >角色</el-button>
+            <el-button
+              v-if="auth.can(PERM.userUpdate)"
+              text
+              size="small"
+              @click="onResetPassword(row as UserRow)"
+            >重置密码</el-button>
           </template>
         </el-table-column>
         <template #empty>
@@ -198,7 +245,7 @@ async function copyPassword() {
       <div class="page-pagination">
         <el-pagination
           v-model:current-page="query.page"
-          v-model:page-size="query.page_size"
+          v-model:page-size="query.size"
           :total="total"
           layout="total, prev, pager, next"
           @current-change="load"
@@ -216,11 +263,11 @@ async function copyPassword() {
           <el-input v-model="form.display_name" placeholder="真实姓名" />
         </el-form-item>
         <el-form-item label="角色">
-          <el-radio-group v-model="form.roles">
+          <el-radio-group v-model="form.role">
             <el-radio value="member">成员（默认）</el-radio>
             <el-radio value="admin">管理员</el-radio>
           </el-radio-group>
-          <div class="role-hint">v1 仅内置角色：管理员拥有全部权限，成员为只读基线权限</div>
+          <div class="role-hint">内置角色：管理员拥有全部权限，成员为只读基线权限</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -232,7 +279,7 @@ async function copyPassword() {
     <!-- 初始密码一次性展示 -->
     <el-dialog v-model="invitedDialog" title="成员已创建" width="440px" :close-on-click-modal="false">
       <div v-if="invited">
-        <el-result icon="success" title="邀请成功" :sub-title="invited.email" />
+        <el-result icon="success" title="创建成功" :sub-title="invited.email" />
         <el-alert type="warning" :closable="false" show-icon>
           <p>初始密码（<b>仅显示这一次</b>，请发给成员本人）：</p>
         </el-alert>
@@ -241,6 +288,35 @@ async function copyPassword() {
       <template #footer>
         <el-button @click="copyPassword">复制密码</el-button>
         <el-button type="primary" @click="invited = null">完成</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 角色调整 -->
+    <el-dialog v-model="roleDialog" title="调整角色" width="420px" :close-on-click-modal="false">
+      <p class="role-target">{{ roleTarget?.display_name }} · {{ roleTarget?.email }}</p>
+      <el-checkbox-group v-model="roleCodes">
+        <el-checkbox value="member">成员（只读基线权限）</el-checkbox>
+        <el-checkbox value="admin">管理员（全部权限）</el-checkbox>
+      </el-checkbox-group>
+      <el-alert type="info" :closable="false" style="margin-top: 12px">
+        <p>去掉管理员会立即失去管理能力；系统不允许移除最后一个启用中的管理员。</p>
+      </el-alert>
+      <template #footer>
+        <el-button @click="roleDialog = false">取消</el-button>
+        <el-button type="primary" :loading="roleSaving" @click="onSaveRoles">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 重置密码一次性展示 -->
+    <el-dialog v-model="resetDialog" title="密码已重置" width="440px" :close-on-click-modal="false">
+      <el-result icon="success" title="重置成功" :sub-title="resetTarget?.email" />
+      <el-alert type="warning" :closable="false" show-icon>
+        <p>新初始密码（<b>仅显示这一次</b>），成员下次登录需再次修改：</p>
+      </el-alert>
+      <div class="password-box num">{{ resetPassword }}</div>
+      <template #footer>
+        <el-button @click="copyResetPassword">复制密码</el-button>
+        <el-button type="primary" @click="resetPassword = ''">完成</el-button>
       </template>
     </el-dialog>
   </div>

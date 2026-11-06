@@ -44,9 +44,12 @@ func NewRouter(cfg Config, log *slog.Logger, metrics *obs.Metrics, health *obs.H
 	engine.GET("/health", health.Live)
 	engine.GET("/readyz", health.Ready)
 
-	// 免鉴权入口：先解析租户，再进登录 / OAuth。
+	// 免鉴权入口：OAuth 注册 / 授权需要租户上下文，先解析租户。
 	public := engine.Group("/api/tenant/v1")
 	public.Use(TenantResolver(lookup, cfg.Tenancy.BaseDomain))
+
+	// 全局登录入口：邮箱全局唯一，登录时才知道租户，不能要求先把租户解析出来。
+	tenantAuth := engine.Group("/api/tenant/v1")
 
 	tenantChain := TenantChain(engine.Group("/api/tenant/v1"), issuer, lookup)
 	if quotaService != nil {
@@ -56,6 +59,7 @@ func NewRouter(cfg Config, log *slog.Logger, metrics *obs.Metrics, health *obs.H
 	// 三条入口链分开注册，平台 token、租户 token、Agent token 互不通用。
 	routeGroups := routes.Routes{
 		Public:         public,
+		TenantAuth:     tenantAuth,
 		PlatformPublic: engine.Group("/api/platform/v1"),
 		Tenant:         tenantChain,
 		Platform:       PlatformChain(engine.Group("/api/platform/v1"), issuer),

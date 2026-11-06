@@ -25,17 +25,19 @@ func newService(t *testing.T) (*tenants.Service, *testutil.Harness) {
 	t.Helper()
 
 	h := testutil.New(t)
-	return tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform)), h
+	return tenants.NewService(h.Platform, h.Tenant, audit.NewService(h.Platform), h.Identity()), h
 }
 
 func createInput() tenants.CreateInput {
+	suffix := strings.ReplaceAll(uuid.Must(uuid.NewV7()).String(), "-", "")[8:]
+
 	return tenants.CreateInput{
 		Code:             uniqueCode("acme"),
 		Name:             "Acme",
 		Timezone:         "Asia/Shanghai",
 		Locale:           "zh-CN",
 		ContactEmail:     "it@acme.test",
-		AdminEmail:       "admin@acme.test",
+		AdminEmail:       "admin-" + suffix + "@acme.test", // 邮箱全局唯一
 		AdminDisplayName: "管理员",
 	}
 }

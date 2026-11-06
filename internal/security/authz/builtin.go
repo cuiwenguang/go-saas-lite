@@ -13,16 +13,36 @@ var (
 	PermAPIKeyRevoke = Custom("apikey", "revoke")
 )
 
+// 租户控制台其余权限点。
+var (
+	PermUserRead   = Read("user")
+	PermUserCreate = Create("user")
+	PermUserUpdate = Update("user")
+	PermUserDelete = Delete("user")
+	PermRoleRead   = Read("role")
+
+	PermMCPRead   = Read("mcp")
+	PermMCPUpdate = Update("mcp")
+
+	PermStatsRead = Read("stats")
+
+	PermOAuthGrantRead   = Read("oauth.grant")
+	PermOAuthGrantRevoke = Custom("oauth.grant", "revoke")
+)
+
 // MemberPerms 是普通成员的最小权限集。
 // 权限点全部来自代码常量，新增时必须同时在此登记。
 var MemberPerms = []Perm{
 	Read("profile"),
 	Update("profile"),
 	Read("tenantconf"),
-	Read("user"),
+	PermUserRead,
+	PermRoleRead,
 	PermAPIKeyRead,
 	PermAPIKeyCreate,
 	PermAPIKeyRevoke,
+	PermMCPRead,
+	PermStatsRead,
 }
 
 // BuiltinRoles 返回内置角色 → 权限集合。
@@ -33,11 +53,17 @@ func BuiltinRoles() map[string][]Perm {
 	}
 }
 
-// RegisterBuiltins 把内置角色用到的权限点登记到全局表。
+// RegisterBuiltins 把内置角色与租户控制台用到的权限点登记到全局表。
 func RegisterBuiltins() error {
-	perms := make([]Perm, 0, len(MemberPerms)+1)
+	perms := make([]Perm, 0, len(MemberPerms)+8)
 	perms = append(perms, Wildcard())
 	perms = append(perms, MemberPerms...)
+	perms = append(perms,
+		PermUserCreate, PermUserUpdate, PermUserDelete,
+		PermMCPUpdate,
+		PermOAuthGrantRead, PermOAuthGrantRevoke,
+		Read("audit"),
+	)
 
 	return Register(perms...)
 }
