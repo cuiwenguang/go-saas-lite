@@ -1,0 +1,97 @@
+{{define "content"}}
+<section class="mx-auto grid max-w-6xl gap-10 px-6 py-16 lg:grid-cols-[1.1fr_1fr]">
+  <div>
+    <h1 class="text-3xl font-semibold tracking-tight sm:text-4xl">创建你的租户</h1>
+    <p class="mt-4 text-slate-600">手机号验证码注册，自动开通租户与管理员账号。</p>
+    <ul class="mt-8 space-y-3 text-sm text-slate-600">
+      <li>· 默认分配免费套餐，可随时升级</li>
+      <li>· 数据按 tenant_id 物理隔离</li>
+      <li>· 注册后即可使用 Web 控制台与 MCP</li>
+    </ul>
+  </div>
+
+  <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+    {{if .Error}}<div class="alert-error mb-5">{{.Error}}</div>{{end}}
+
+    <form method="post" action="/signup" class="space-y-4">
+      <input type="text" name="website" class="hidden" tabindex="-1" autocomplete="off" aria-hidden="true">
+
+      <div>
+        <label class="label" for="company_name">公司名称</label>
+        <input id="company_name" class="input" name="company_name" value="{{.Form.CompanyName}}" required maxlength="64" placeholder="例如：星河科技">
+      </div>
+
+      <div>
+        <label class="label" for="phone">手机号</label>
+        <input id="phone" class="input" name="phone" value="{{.Form.Phone}}" required inputmode="tel" placeholder="11 位手机号">
+      </div>
+
+      <div>
+        <label class="label" for="code">验证码</label>
+        <div class="mt-1 flex gap-2">
+          <input id="code" class="input mt-0" name="code" required inputmode="numeric" maxlength="6" placeholder="6 位验证码">
+          <button type="button" id="send-code" class="btn-secondary whitespace-nowrap" onclick="sendCode()">获取验证码</button>
+        </div>
+        <span id="code-msg" class="mt-1 block text-xs text-slate-500"></span>
+      </div>
+
+      <div>
+        <label class="label" for="password">密码</label>
+        <input id="password" class="input" type="password" name="password" required minlength="8" placeholder="至少 8 位">
+      </div>
+
+      <div>
+        <label class="label" for="subdomain">子域名（可选）</label>
+        <input id="subdomain" class="input" name="subdomain" value="{{.Form.Subdomain}}" placeholder="acme">
+      </div>
+
+      <label class="flex items-start gap-2 text-sm text-slate-600">
+        <input type="checkbox" name="accept_terms" required class="mt-1">
+        <span>我已阅读并同意 <a href="/terms" class="underline">服务条款</a> 与 <a href="/privacy" class="underline">隐私政策</a></span>
+      </label>
+
+      <button type="submit" class="btn-primary w-full">创建租户</button>
+    </form>
+  </div>
+</section>
+
+<script>
+async function sendCode() {
+  const phone = document.getElementById('phone').value.trim();
+  const button = document.getElementById('send-code');
+  const message = document.getElementById('code-msg');
+  if (!phone) {
+    message.textContent = '请先填写手机号';
+    return;
+  }
+
+  button.disabled = true;
+  try {
+    const response = await fetch('/signup/otp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone }),
+    });
+    const body = await response.json();
+    if (!response.ok || body.code !== 0) {
+      throw new Error(body.msg || '发送失败');
+    }
+    message.textContent = '验证码已发送';
+    let left = 60;
+    button.textContent = left + 's';
+    const timer = setInterval(() => {
+      left -= 1;
+      button.textContent = left + 's';
+      if (left <= 0) {
+        clearInterval(timer);
+        button.disabled = false;
+        button.textContent = '获取验证码';
+      }
+    }, 1000);
+  } catch (error) {
+    message.textContent = error.message;
+    button.disabled = false;
+  }
+}
+</script>
+{{end}}

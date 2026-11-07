@@ -239,6 +239,9 @@ func (s *Service) repairTenant(ctx context.Context, tenantID string, report *Rep
 		if !stale && row.IdentifierType == TypeEmail && user.Email != row.Identifier {
 			stale = true
 		}
+		if !stale && row.IdentifierType == TypePhone && (user.Phone == nil || *user.Phone != row.Identifier) {
+			stale = true
+		}
 		if !stale {
 			continue
 		}
@@ -251,31 +254,41 @@ func (s *Service) repairTenant(ctx context.Context, tenantID string, report *Rep
 		report.Removed++
 	}
 
-	// 2. 补齐缺失的邮箱索引。
+	// 2. 补齐缺失的邮箱 / 手机号索引。
 	indexed := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
 		indexed[row.UserID+"|"+row.Identifier] = struct{}{}
 	}
 	for _, user := range users {
-		email, err := Normalize(TypeEmail, user.Email)
-		if err != nil {
-			continue
+		candidates := make([]Identifier, 0, 2)
+		if user.Email != "" {
+			candidates = append(candidates, Identifier{Type: TypeEmail, Value: user.Email})
 		}
-		if _, ok := indexed[user.ID+"|"+email]; ok {
-			continue
+		if user.Phone != nil && *user.Phone != "" {
+			candidates = append(candidates, Identifier{Type: TypePhone, Value: *user.Phone})
 		}
 
-		report.Scanned++
-		if err := s.Ensure(ctx, tenantID, user.ID, []Identifier{{Type: TypeEmail, Value: email}}); err != nil {
-			if appErr := apperr.From(err); appErr != nil && appErr.Code == apperr.CodeConflict {
-				report.Conflicts++
-
+		for _, candidate := range candidates {
+			value, err := Normalize(candidate.Type, candidate.Value)
+			if err != nil {
+				continue
+			}
+			if _, ok := indexed[user.ID+"|"+value]; ok {
 				continue
 			}
 
-			return err
+			report.Scanned++
+			if err := s.Ensure(ctx, tenantID, user.ID, []Identifier{{Type: candidate.Type, Value: value}}); err != nil {
+				if appErr := apperr.From(err); appErr != nil && appErr.Code == apperr.CodeConflict {
+					report.Conflicts++
+
+					continue
+				}
+
+				return err
+			}
+			report.Added++
 		}
-		report.Added++
 	}
 
 	return nil

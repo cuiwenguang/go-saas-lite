@@ -65,11 +65,12 @@ func Authenticate(c *gin.Context, issuer *Issuer, rule Rule) (tenancy.Scope, boo
 	}
 
 	scope := tenancy.Scope{
-		TenantID:   claims.TenantID,
-		UserID:     claims.Subject,
-		ClientID:   claims.ClientID,
-		Actor:      claims.Actor(),
-		ActorEmail: claims.Email,
+		TenantID:           claims.TenantID,
+		UserID:             claims.Subject,
+		ClientID:           claims.ClientID,
+		Actor:              claims.Actor(),
+		ActorEmail:         claims.Email,
+		MustChangePassword: claims.MustChangePassword,
 	}
 	if scope.Actor == tenancy.ActorPlatform {
 		scope.Role = claims.Scope

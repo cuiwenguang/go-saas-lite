@@ -36,6 +36,29 @@ func tenantStateError(status string) error {
 	return nil
 }
 
+// PasswordChangeGuard 在 must_change_password 为真时只放行查看资料与改密接口。
+func PasswordChangeGuard() gin.HandlerFunc {
+	allowed := map[string]struct{}{
+		"/api/tenant/v1/me":            {},
+		"/api/tenant/v1/auth/password": {},
+	}
+
+	return func(c *gin.Context) {
+		scope, err := tenancy.ScopeFrom(c.Request.Context())
+		if err != nil || !scope.MustChangePassword {
+			c.Next()
+			return
+		}
+
+		if _, ok := allowed[c.FullPath()]; ok {
+			c.Next()
+			return
+		}
+
+		response.Fail(c, apperr.New(apperr.CodePasswordChangeRequired, "password change required"))
+	}
+}
+
 // TenantStateGuard 是已鉴权链的二次状态复查（readme §九）：
 // 令牌仍然有效，但租户已停用 / 到期 / 归档时同样拦截。
 func TenantStateGuard(lookup TenantLookup) gin.HandlerFunc {

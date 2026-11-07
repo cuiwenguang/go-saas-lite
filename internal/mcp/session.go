@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,6 +34,10 @@ type SessionStore interface {
 	Create(ctx context.Context, session Session) error
 	Get(ctx context.Context, tenantID, id string) (Session, error)
 	Delete(ctx context.Context, tenantID, id string) error
+	// Count 返回租户当前活跃会话数，供并发配额校验使用。
+	Count(ctx context.Context, tenantID string) (int64, error)
+	// RevokeClient 作废某用户在某客户端下的全部会话（撤销授权时调用）。
+	RevokeClient(ctx context.Context, tenantID, userID, clientID string) error
 }
 
 // ErrSessionNotFound 表示会话不存在或已过期。
@@ -56,12 +61,42 @@ func sessionKey(tenantID, id string) string {
 	return fmt.Sprintf("mcp:session:%s:%s", tenantID, id)
 }
 
+func sessionSetKey(tenantID string) string {
+	return "mcp:sessions:" + tenantID
+}
+
+func sessionUserKey(tenantID, userID, clientID string) string {
+	return fmt.Sprintf("mcp:sessions:user:%s:%s:%s", tenantID, userID, clientID)
+}
+
 func (s *RedisSessions) Create(ctx context.Context, session Session) error {
 	payload, err := json.Marshal(session)
 	if err != nil {
 		return err
 	}
-	return s.client.Set(ctx, sessionKey(session.TenantID, session.ID), payload, s.ttl).Err()
+	if err := s.client.Set(ctx, sessionKey(session.TenantID, session.ID), payload, s.ttl).Err(); err != nil {
+		return err
+	}
+
+	// 用 ZSET 维护活跃会话，score 为过期时间，避免逐 key SCAN。
+	setKey := sessionSetKey(session.TenantID)
+	if err := s.client.ZAdd(ctx, setKey, redis.Z{
+		Score:  float64(time.Now().Add(s.ttl).Unix()),
+		Member: session.ID,
+	}).Err(); err != nil {
+		return err
+	}
+
+	if err := s.client.Expire(ctx, setKey, s.ttl*2).Err(); err != nil {
+		return err
+	}
+
+	userKey := sessionUserKey(session.TenantID, session.UserID, session.ClientID)
+	if err := s.client.SAdd(ctx, userKey, session.ID).Err(); err != nil {
+		return err
+	}
+
+	return s.client.Expire(ctx, userKey, s.ttl*2).Err()
 }
 
 func (s *RedisSessions) Get(ctx context.Context, tenantID, id string) (Session, error) {
@@ -82,7 +117,40 @@ func (s *RedisSessions) Get(ctx context.Context, tenantID, id string) (Session, 
 }
 
 func (s *RedisSessions) Delete(ctx context.Context, tenantID, id string) error {
-	return s.client.Del(ctx, sessionKey(tenantID, id)).Err()
+	session, err := s.Get(ctx, tenantID, id)
+	if err == nil {
+		_ = s.client.SRem(ctx, sessionUserKey(tenantID, session.UserID, session.ClientID), id).Err()
+	}
+
+	if err := s.client.Del(ctx, sessionKey(tenantID, id)).Err(); err != nil {
+		return err
+	}
+
+	return s.client.ZRem(ctx, sessionSetKey(tenantID), id).Err()
+}
+
+func (s *RedisSessions) Count(ctx context.Context, tenantID string) (int64, error) {
+	setKey := sessionSetKey(tenantID)
+	if err := s.client.ZRemRangeByScore(ctx, setKey, "-inf", strconv.FormatInt(time.Now().Unix(), 10)).Err(); err != nil {
+		return 0, err
+	}
+
+	return s.client.ZCard(ctx, setKey).Result()
+}
+
+func (s *RedisSessions) RevokeClient(ctx context.Context, tenantID, userID, clientID string) error {
+	userKey := sessionUserKey(tenantID, userID, clientID)
+	ids, err := s.client.SMembers(ctx, userKey).Result()
+	if err != nil {
+		return err
+	}
+
+	for _, id := range ids {
+		_ = s.client.Del(ctx, sessionKey(tenantID, id)).Err()
+		_ = s.client.ZRem(ctx, sessionSetKey(tenantID), id).Err()
+	}
+
+	return s.client.Del(ctx, userKey).Err()
 }
 
 // MemorySessions 是单机会话存储，仅用于未启用 Redis 的开发环境。
@@ -115,6 +183,28 @@ func (m *MemorySessions) Get(_ context.Context, tenantID, id string) (Session, e
 // Delete 删除会话。
 func (m *MemorySessions) Delete(_ context.Context, tenantID, id string) error {
 	delete(m.sessions, memoryKey(tenantID, id))
+	return nil
+}
+
+func (m *MemorySessions) Count(_ context.Context, tenantID string) (int64, error) {
+	prefix := tenantID + "|"
+	var count int64
+	for key := range m.sessions {
+		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
+			count++
+		}
+	}
+
+	return count, nil
+}
+
+func (m *MemorySessions) RevokeClient(_ context.Context, tenantID, userID, clientID string) error {
+	for key, session := range m.sessions {
+		if session.TenantID == tenantID && session.UserID == userID && session.ClientID == clientID {
+			delete(m.sessions, key)
+		}
+	}
+
 	return nil
 }
 

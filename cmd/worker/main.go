@@ -10,6 +10,7 @@ import (
 
 	"github.com/cuiwenguang/go-saas-lite/internal/app"
 	"github.com/cuiwenguang/go-saas-lite/internal/worker"
+	"github.com/cuiwenguang/go-saas-lite/pkg/queue"
 )
 
 func main() {
@@ -28,10 +29,21 @@ func main() {
 		AuditRetentionDays: cfg.Audit.RetentionDays,
 	}
 
+	queueOpts := worker.QueueOptions{
+		Enabled:       cfg.Queue.Enabled,
+		Concurrency:   cfg.Queue.Concurrency,
+		Heartbeat:     cfg.Queue.Heartbeat,
+		RedisAddr:     cfg.Redis.Addr,
+		RedisPassword: cfg.Redis.Password,
+		RedisDB:       cfg.Redis.DB,
+	}
+
 	fx.New(fx.Options(
 		app.Core(cfg),
 		fx.Supply(opts),
-		fx.Provide(worker.New),
+		fx.Supply(queueOpts),
+		fx.Provide(worker.New, worker.NewQueueServer),
 		fx.Invoke(func(*worker.Worker) {}),
+		fx.Invoke(func(*queue.Server) {}),
 	)).Run()
 }

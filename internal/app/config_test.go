@@ -65,3 +65,31 @@ func TestLoadConfigRequiresDSN(t *testing.T) {
 		t.Fatal("missing database dsn must be rejected")
 	}
 }
+
+func TestLoadConfigBindsStorageCloud(t *testing.T) {
+	t.Setenv("SAAS_DATABASE__PLATFORM_DSN", "postgres://platform")
+	t.Setenv("SAAS_DATABASE__TENANT_DSN", "postgres://tenant")
+	t.Setenv("SAAS_STORAGE__DRIVER", "cos")
+	t.Setenv("SAAS_STORAGE__COS__BUCKET", "demo-1250000000")
+	t.Setenv("SAAS_STORAGE__COS__REGION", "ap-guangzhou")
+	t.Setenv("SAAS_STORAGE__COS__SECRET_ID", "id")
+	t.Setenv("SAAS_STORAGE__COS__SECRET_KEY", "key")
+
+	cfg, err := app.LoadConfig("")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Storage.Driver != "cos" || cfg.Storage.COS.Bucket != "demo-1250000000" {
+		t.Fatalf("storage cos env not bound: %+v", cfg.Storage)
+	}
+}
+
+func TestLoadConfigRejectsCloudStorageWithoutCredentials(t *testing.T) {
+	t.Setenv("SAAS_DATABASE__PLATFORM_DSN", "postgres://platform")
+	t.Setenv("SAAS_DATABASE__TENANT_DSN", "postgres://tenant")
+	t.Setenv("SAAS_STORAGE__DRIVER", "oss")
+
+	if _, err := app.LoadConfig(""); err == nil {
+		t.Fatal("oss without credentials must be rejected")
+	}
+}

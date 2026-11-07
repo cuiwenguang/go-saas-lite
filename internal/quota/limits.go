@@ -13,9 +13,10 @@ import (
 type Metric string
 
 const (
-	MetricAPICalls Metric = "api_calls"
-	MetricMCPCalls Metric = "mcp_calls"
-	MetricMCPToken Metric = "mcp_tokens"
+	MetricAPICalls    Metric = "api_calls"
+	MetricMCPCalls    Metric = "mcp_calls"
+	MetricMCPToken    Metric = "mcp_tokens"
+	MetricMCPSessions Metric = "mcp_sessions"
 )
 
 // Limits 是套餐的配额上限；0 表示不限。
@@ -23,6 +24,7 @@ type Limits struct {
 	MaxUsers    int      `json:"max_users"`
 	StorageGB   int      `json:"storage_gb"`
 	APIQPS      int      `json:"api_qps"`
+	APICalls    int64    `json:"api_calls"`
 	MCPCalls    int64    `json:"mcp_calls"`
 	MCPTokens   int64    `json:"mcp_tokens"`
 	MCPSessions int      `json:"mcp_sessions"`
@@ -47,11 +49,13 @@ func ParseLimits(raw string) (Limits, error) {
 func (l Limits) ForMetric(metric Metric) int64 {
 	switch metric {
 	case MetricAPICalls:
-		return int64(l.APIQPS) * 1000 // 粗略上限，精确限流由限流中间件负责
+		return l.APICalls
 	case MetricMCPCalls:
 		return l.MCPCalls
 	case MetricMCPToken:
 		return l.MCPTokens
+	case MetricMCPSessions:
+		return int64(l.MCPSessions)
 	default:
 		return 0
 	}

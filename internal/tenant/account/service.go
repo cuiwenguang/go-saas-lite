@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
@@ -16,6 +17,9 @@ import (
 	"github.com/cuiwenguang/go-saas-lite/internal/security/auth"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/authz"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/identity"
+	"github.com/cuiwenguang/go-saas-lite/internal/security/loginlimit"
+	"github.com/cuiwenguang/go-saas-lite/internal/security/otp"
+	auditlog "github.com/cuiwenguang/go-saas-lite/internal/tenant/audit"
 	"github.com/cuiwenguang/go-saas-lite/pkg/apperr"
 	"github.com/cuiwenguang/go-saas-lite/pkg/tenancy"
 )
@@ -33,22 +37,55 @@ type Service struct {
 	issuer     *auth.Issuer
 	keys       *apikey.Service
 	identities *identity.Service
+	otp        *otp.Service
+	loginLimit *loginlimit.Limiter
+	audit      *auditlog.Service
 }
 
-// NewService 创建服务。
-func NewService(db tenancy.DB, platform tenancy.PlatformDB, issuer *auth.Issuer, keys *apikey.Service, identities *identity.Service) *Service {
-	return &Service{db: db, platform: platform, issuer: issuer, keys: keys, identities: identities}
+// NewService 创建服务；otp / redis / audit 为 nil 时对应能力关闭。
+func NewService(db tenancy.DB, platform tenancy.PlatformDB, issuer *auth.Issuer, keys *apikey.Service, identities *identity.Service, otpService *otp.Service, client *redis.Client, auditService *auditlog.Service) *Service {
+	return &Service{
+		db:         db,
+		platform:   platform,
+		issuer:     issuer,
+		keys:       keys,
+		identities: identities,
+		otp:        otpService,
+		loginLimit: loginlimit.New(client),
+		audit:      auditService,
+	}
 }
 
-// Login 全局登录：邮箱全局唯一，定位到租户后在租户作用域内校验密码。
-// 错误统一为 invalid credentials，避免被用来枚举邮箱。
+// Login 全局登录：支持邮箱+密码、手机号+密码、手机号+验证码。
+// 错误统一为 invalid credentials，避免被用来枚举账号。
 func (s *Service) Login(ctx context.Context, in LoginInput) (*LoginOutput, error) {
-	email := strings.ToLower(strings.TrimSpace(in.Email))
-	if email == "" || in.Password == "" {
-		return nil, apperr.New(apperr.CodeInvalidArgument, "email and password are required")
+	kind, identifier, byCode, err := in.loginIdentifier()
+	if err != nil {
+		return nil, err
 	}
 
-	hit, err := s.identities.Lookup(ctx, identity.TypeEmail, email)
+	limitKey := loginlimit.Key("tenant", strings.ToLower(identifier))
+	if !s.loginLimit.Allow(ctx, limitKey) {
+		return nil, apperr.New(apperr.CodeUnauthenticated, "登录失败次数过多，请稍后再试")
+	}
+
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			s.loginLimit.Fail(ctx, limitKey)
+		}
+	}()
+
+	if byCode {
+		if s.otp == nil {
+			return nil, apperr.New(apperr.CodeUnavailable, "验证码登录未启用")
+		}
+		if err := s.otp.Verify(ctx, otp.SceneLogin, identifier, in.Code); err != nil {
+			return nil, apperr.New(apperr.CodeUnauthenticated, "invalid credentials")
+		}
+	}
+
+	hit, err := s.identities.Lookup(ctx, kind, identifier)
 	if err != nil {
 		return nil, apperr.New(apperr.CodeUnauthenticated, "invalid credentials")
 	}
@@ -76,11 +113,99 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*LoginOutput, error
 	if readErr != nil {
 		return nil, apperr.Wrap(readErr, apperr.CodeInternal, "load user")
 	}
-	if user.Status != statusActive || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(in.Password)) != nil {
+	if user.Status != statusActive {
+		return nil, apperr.New(apperr.CodeUnauthenticated, "invalid credentials")
+	}
+	if !byCode && bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(in.Password)) != nil {
 		return nil, apperr.New(apperr.CodeUnauthenticated, "invalid credentials")
 	}
 
+	succeeded = true
+	s.loginLimit.Reset(ctx, limitKey)
+
 	return s.issueSession(scopeCtx, hit.TenantID, user)
+}
+
+// loginIdentifier 判断使用邮箱 / 手机号以及密码 / 验证码。
+func (in LoginInput) loginIdentifier() (kind, value string, byCode bool, err error) {
+	email := strings.ToLower(strings.TrimSpace(in.Email))
+	phone := strings.TrimSpace(in.Phone)
+	switch {
+	case phone != "" && strings.TrimSpace(in.Code) != "":
+		return identity.TypePhone, phone, true, nil
+	case phone != "" && in.Password != "":
+		return identity.TypePhone, phone, false, nil
+	case email != "" && in.Password != "":
+		return identity.TypeEmail, email, false, nil
+	default:
+		return "", "", false, apperr.New(apperr.CodeInvalidArgument, "credentials are required")
+	}
+}
+
+// SendCode 发送验证码；短信通道未启用时返回不可用。
+func (s *Service) SendCode(ctx context.Context, in SendCodeInput) error {
+	if s.otp == nil {
+		return apperr.New(apperr.CodeUnavailable, "验证码服务未启用")
+	}
+
+	if err := s.otp.Send(ctx, in.Scene, in.Phone); err != nil {
+		switch {
+		case errors.Is(err, otp.ErrTooFrequent), errors.Is(err, otp.ErrDailyLimit):
+			return apperr.New(apperr.CodeQuotaExceeded, "验证码发送过于频繁")
+		default:
+			return apperr.Wrap(err, apperr.CodeInvalidArgument, "send code")
+		}
+	}
+
+	return nil
+}
+
+// ResetPassword 用手机号验证码重置密码，并作废旧会话。
+func (s *Service) ResetPassword(ctx context.Context, in ResetPasswordInput) error {
+	if s.otp == nil {
+		return apperr.New(apperr.CodeUnavailable, "验证码服务未启用")
+	}
+	if len(in.NewPassword) < minPasswordLen {
+		return apperr.New(apperr.CodeInvalidArgument, "new password must be at least 8 characters")
+	}
+	if err := s.otp.Verify(ctx, otp.SceneReset, in.Phone, in.Code); err != nil {
+		return apperr.New(apperr.CodeUnauthenticated, "invalid code")
+	}
+
+	hit, err := s.identities.Lookup(ctx, identity.TypePhone, in.Phone)
+	if err != nil {
+		return apperr.New(apperr.CodeUnauthenticated, "invalid credentials")
+	}
+	if err := s.ensureTenantUsable(ctx, hit.TenantID); err != nil {
+		return err
+	}
+
+	scopeCtx := tenancy.WithScope(ctx, tenancy.Scope{
+		TenantID: hit.TenantID,
+		UserID:   hit.UserID,
+		Actor:    tenancy.ActorTenant,
+	})
+	user, err := s.userByID(scopeCtx, hit.UserID)
+	if err != nil {
+		return err
+	}
+	if user.Status != statusActive {
+		return apperr.New(apperr.CodeUnauthenticated, "invalid credentials")
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(in.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return apperr.Wrap(err, apperr.CodeInternal, "hash password")
+	}
+
+	return s.db.Tx(scopeCtx, func(tx tenancy.Tx) error {
+		return tx.Where("id = ?", user.ID).Update(&User{}, map[string]any{
+			"password_hash":        string(hash),
+			"must_change_password": false,
+			"token_version":        gorm.Expr("token_version + 1"),
+			"refresh_jti":          "",
+		})
+	})
 }
 
 // ensureTenantUsable 登录前确认租户未被停用/过期（读时判定，与中间件口径一致）。
@@ -226,6 +351,7 @@ func (s *Service) Me(ctx context.Context) (*MeOutput, error) {
 		User: Profile{
 			ID:          user.ID,
 			Email:       user.Email,
+			Phone:       derefString(user.Phone),
 			DisplayName: user.DisplayName,
 			Roles:       codes,
 		},
@@ -241,7 +367,23 @@ func (s *Service) Me(ctx context.Context) (*MeOutput, error) {
 
 // CreateKey 创建用户 API Key。
 func (s *Service) CreateKey(ctx context.Context, tenantID, userID, name string) (string, *apikey.Key, error) {
-	return s.keys.Create(ctx, tenantID, userID, name)
+	plain, key, err := s.keys.Create(ctx, tenantID, userID, name)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if s.audit != nil && key != nil {
+		_ = s.audit.Record(ctx, auditlog.Entry{
+			Category:   auditlog.CategorySecurity,
+			Action:     auditlog.ActionAPIKeyCreate,
+			ObjectType: "apikey",
+			ObjectID:   key.ID,
+			Summary:    "创建 API Key " + key.Name,
+			After:      map[string]any{"name": key.Name, "prefix": key.KeyPrefix},
+		})
+	}
+
+	return plain, key, nil
 }
 
 // ListKeys 列出用户的 API Key。
@@ -251,12 +393,35 @@ func (s *Service) ListKeys(ctx context.Context, tenantID, userID string) ([]apik
 
 // RevokeKey 撤销用户的 API Key。
 func (s *Service) RevokeKey(ctx context.Context, tenantID, userID, id string) error {
-	return s.keys.Revoke(ctx, tenantID, userID, id)
+	if err := s.keys.Revoke(ctx, tenantID, userID, id); err != nil {
+		return err
+	}
+
+	if s.audit != nil {
+		_ = s.audit.Record(ctx, auditlog.Entry{
+			Category:   auditlog.CategorySecurity,
+			Action:     auditlog.ActionAPIKeyRevoke,
+			Level:      auditlog.LevelWarn,
+			ObjectType: "apikey",
+			ObjectID:   id,
+			Summary:    "撤销 API Key",
+		})
+	}
+
+	return nil
 }
 
 // RefreshTTL 返回 refresh 令牌有效期，供 handler 设置 cookie。
 func (s *Service) RefreshTTL() time.Duration {
 	return refreshTTL
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+
+	return *value
 }
 
 func (s *Service) userByID(ctx context.Context, id string) (*User, error) {
@@ -335,13 +500,14 @@ func (s *Service) rolesOf(ctx context.Context, userID string) ([]string, []strin
 func (s *Service) issueSession(ctx context.Context, tenantID string, user User) (*LoginOutput, error) {
 	accessTTL := s.issuer.AccessTTL()
 	access, err := s.issuer.Issue(auth.IssueOptions{
-		Subject:   user.ID,
-		Actor:     tenancy.ActorTenant,
-		Audience:  auth.AudienceTenantAPI,
-		TenantID:  tenantID,
-		TokenType: auth.TokenAccess,
-		Email:     user.Email,
-		TTL:       accessTTL,
+		Subject:            user.ID,
+		Actor:              tenancy.ActorTenant,
+		Audience:           auth.AudienceTenantAPI,
+		TenantID:           tenantID,
+		TokenType:          auth.TokenAccess,
+		Email:              user.Email,
+		MustChangePassword: user.MustChangePassword,
+		TTL:                accessTTL,
 	})
 	if err != nil {
 		return nil, apperr.Wrap(err, apperr.CodeInternal, "issue access token")

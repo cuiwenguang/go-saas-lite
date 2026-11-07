@@ -1,9 +1,24 @@
 package account
 
-// LoginInput 是租户登录入参。
+// LoginInput 是租户登录入参：邮箱+密码、手机号+密码、手机号+验证码三选一。
 type LoginInput struct {
 	Email    string `json:"email"`
+	Phone    string `json:"phone"`
 	Password string `json:"password"`
+	Code     string `json:"code"`
+}
+
+// SendCodeInput 是发送验证码入参。
+type SendCodeInput struct {
+	Phone string `json:"phone"`
+	Scene string `json:"scene"`
+}
+
+// ResetPasswordInput 是验证码重置密码入参。
+type ResetPasswordInput struct {
+	Phone       string `json:"phone"`
+	Code        string `json:"code"`
+	NewPassword string `json:"new_password"`
 }
 
 // CreateKeyInput 是创建 API Key 入参。
@@ -24,6 +39,7 @@ type LoginOutput struct {
 type Profile struct {
 	ID          string   `json:"id"`
 	Email       string   `json:"email"`
+	Phone       string   `json:"phone,omitempty"`
 	DisplayName string   `json:"display_name"`
 	Roles       []string `json:"roles"`
 }

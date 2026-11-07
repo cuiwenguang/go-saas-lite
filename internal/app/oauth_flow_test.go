@@ -72,9 +72,10 @@ func newFullFixture(t *testing.T) *fullFixture {
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
+	h.ClearMustChangePassword(t, created.ID, email)
 
-	tenantAccount := tenantaccount.NewHandler(tenantaccount.NewService(h.Tenant, h.Platform, issuer, keys, h.Identity()), authorizer, tenantaccount.Options{})
-	platformH := platformaccount.NewHandler(platformaccount.NewService(h.Platform, issuer, audit.NewService(h.Platform)), platformaccount.Options{})
+	tenantAccount := tenantaccount.NewHandler(tenantaccount.NewService(h.Tenant, h.Platform, issuer, keys, h.Identity(), nil, nil, nil), authorizer, tenantaccount.Options{})
+	platformH := platformaccount.NewHandler(platformaccount.NewService(h.Platform, issuer, audit.NewService(h.Platform), nil), platformaccount.Options{})
 
 	var oauthHandler *oauth.Handler
 	if client := testRedis(t); client != nil {
@@ -187,6 +188,24 @@ func TestPlatformLoginAndOwnerWrite(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
 	if body.Data.AccessToken == "" {
 		t.Fatal("platform login returned empty token")
+	}
+
+	var refreshCookie *http.Cookie
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == "saas_platform_refresh" {
+			refreshCookie = cookie
+		}
+	}
+	if refreshCookie == nil || refreshCookie.Value == "" {
+		t.Fatal("platform login did not set refresh cookie")
+	}
+
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/platform/v1/auth/refresh", nil)
+	refreshReq.AddCookie(refreshCookie)
+	refreshRec := httptest.NewRecorder()
+	f.engine.ServeHTTP(refreshRec, refreshReq)
+	if refreshRec.Code != http.StatusOK {
+		t.Fatalf("platform refresh: %d %s", refreshRec.Code, refreshRec.Body.String())
 	}
 
 	createBody, _ := json.Marshal(map[string]any{

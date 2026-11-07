@@ -40,12 +40,13 @@ const (
 	CodeTenantProvision Code = 10005
 
 	// 2xxxx 认证鉴权
-	CodeUnauthenticated  Code = 20001
-	CodeInvalidToken     Code = 20002
-	CodeTokenExpired     Code = 20003
-	CodeForbidden        Code = 20004
-	CodePermissionDenied Code = 20005
-	CodeActorMismatch    Code = 20006
+	CodeUnauthenticated        Code = 20001
+	CodeInvalidToken           Code = 20002
+	CodeTokenExpired           Code = 20003
+	CodeForbidden              Code = 20004
+	CodePermissionDenied       Code = 20005
+	CodeActorMismatch          Code = 20006
+	CodePasswordChangeRequired Code = 20007
 
 	// 3xxxx 配额
 	CodeQuotaExceeded Code = 30001
@@ -82,7 +83,7 @@ func HTTPStatus(code Code) int {
 
 	case CodeUnauthenticated, CodeInvalidToken, CodeTokenExpired:
 		return http.StatusUnauthorized
-	case CodeForbidden, CodePermissionDenied, CodeActorMismatch:
+	case CodeForbidden, CodePermissionDenied, CodeActorMismatch, CodePasswordChangeRequired:
 		return http.StatusForbidden
 
 	case CodeQuotaExceeded:

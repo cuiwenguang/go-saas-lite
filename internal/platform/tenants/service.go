@@ -48,12 +48,27 @@ func NewService(platform tenancy.PlatformDB, tenantDB tenancy.DB, auditService *
 //  2. 租户库在一个事务内建内置角色、管理员、绑定；
 //  3. 平台库置 active / succeeded。
 func (s *Service) Create(ctx context.Context, in CreateInput) (*Tenant, string, error) {
+	return s.create(ctx, in, true)
+}
+
+// CreatePending 完成开通但保持 pending，供自助注册的人工审核模式使用。
+func (s *Service) CreatePending(ctx context.Context, in CreateInput) (*Tenant, string, error) {
+	return s.create(ctx, in, false)
+}
+
+func (s *Service) create(ctx context.Context, in CreateInput, activate bool) (*Tenant, string, error) {
 	if err := in.validate(); err != nil {
 		return nil, "", err
 	}
 
-	// 全局唯一：邮箱已被别的租户占用时直接拒绝，避免租户建好但管理员登不进来。
-	if err := s.ensureEmailAvailable(ctx, in.AdminEmail); err != nil {
+	adminEmail := strings.ToLower(strings.TrimSpace(in.AdminEmail))
+	adminPhone, err := normalizePhone(in.AdminPhone)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// 全局唯一：邮箱 / 手机号已被别的租户占用时直接拒绝。
+	if err := s.ensureIdentifierAvailable(ctx, adminEmail, adminPhone); err != nil {
 		return nil, "", err
 	}
 
@@ -87,7 +102,8 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Tenant, string, 
 	tenant.ContactName = optional(in.ContactName)
 	tenant.ContactPhone = optional(in.ContactPhone)
 	tenant.ContactEmail = optional(in.ContactEmail)
-	tenant.AdminEmail = optional(strings.ToLower(strings.TrimSpace(in.AdminEmail)))
+	tenant.AdminEmail = optional(adminEmail)
+	tenant.AdminPhone = optional(adminPhone)
 
 	if err := s.platform.Tx(ctx, func(tx tenancy.Tx) error {
 		return tx.Create(tenant)
@@ -98,9 +114,13 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Tenant, string, 
 
 	admin := adminSeed{
 		UserID:       uuid.Must(uuid.NewV7()).String(),
-		Email:        strings.ToLower(in.AdminEmail),
+		Email:        adminEmail,
+		Phone:        adminPhone,
 		DisplayName:  defaultString(in.AdminDisplayName, "管理员"),
 		PasswordHash: passwordHash,
+		TenantName:   tenant.Name,
+		Timezone:     tenant.Timezone,
+		Locale:       tenant.Locale,
 	}
 
 	if err := s.provision(ctx, tenant.ID, admin, false); err != nil {
@@ -116,9 +136,11 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Tenant, string, 
 	s.recordStep(ctx, tenant.ID, "identity_indexed")
 
 	activated := map[string]any{
-		"status":           StatusActive,
 		"provision_status": ProvisionSucceeded,
 		"provision_step":   "done",
+	}
+	if activate {
+		activated["status"] = StatusActive
 	}
 	if err := s.platform.Tx(ctx, func(tx tenancy.Tx) error {
 		return tx.Where("id = ?", tenant.ID).Update(&Tenant{}, activated)
@@ -126,8 +148,10 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Tenant, string, 
 		return nil, "", apperr.Wrap(err, apperr.CodeInternal, "activate tenant")
 	}
 
-	tenant.Status = StatusActive
 	tenant.ProvisionStatus = ProvisionSucceeded
+	if activate {
+		tenant.Status = StatusActive
+	}
 
 	s.recordAudit(ctx, audit.Entry{
 		Category:   audit.CategoryTenant,
@@ -321,8 +345,12 @@ func (s *Service) RetryProvision(ctx context.Context, id string) (*Tenant, strin
 		return nil, "", apperr.New(apperr.CodeInvalidArgument, "archived tenant cannot be provisioned")
 	case tenant.ProvisionStatus == ProvisionSucceeded:
 		return nil, "", apperr.New(apperr.CodeInvalidArgument, "tenant is already provisioned")
-	case tenant.AdminEmail == nil || *tenant.AdminEmail == "":
-		return nil, "", apperr.New(apperr.CodeInvalidArgument, "tenant has no recorded admin email")
+	}
+
+	adminEmail := deref(tenant.AdminEmail)
+	adminPhone := deref(tenant.AdminPhone)
+	if adminEmail == "" && adminPhone == "" {
+		return nil, "", apperr.New(apperr.CodeInvalidArgument, "tenant has no recorded admin identifier")
 	}
 
 	password, err := generatePassword()
@@ -343,9 +371,13 @@ func (s *Service) RetryProvision(ctx context.Context, id string) (*Tenant, strin
 
 	admin := adminSeed{
 		UserID:       uuid.Must(uuid.NewV7()).String(),
-		Email:        *tenant.AdminEmail,
+		Email:        adminEmail,
+		Phone:        adminPhone,
 		DisplayName:  "管理员",
 		PasswordHash: passwordHash,
+		TenantName:   tenant.Name,
+		Timezone:     tenant.Timezone,
+		Locale:       tenant.Locale,
 	}
 	if err := s.provision(ctx, id, admin, true); err != nil {
 		s.markFailed(ctx, id, err)
@@ -389,14 +421,111 @@ func (s *Service) RetryProvision(ctx context.Context, id string) (*Tenant, strin
 	return updated, password, nil
 }
 
+// RetryProvisionExisting 在保留管理员密码的前提下续跑开通流水线，供异步任务使用。
+// 仅适用于管理员已创建、后续步骤失败或待激活的租户；需要重置密码时仍走 RetryProvision。
+func (s *Service) RetryProvisionExisting(ctx context.Context, id string) error {
+	tenant, err := s.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	switch {
+	case tenant.Status == StatusArchived:
+		return apperr.New(apperr.CodeInvalidArgument, "archived tenant cannot be provisioned")
+	case tenant.ProvisionStatus == ProvisionSucceeded:
+		return apperr.New(apperr.CodeInvalidArgument, "tenant is already provisioned")
+	}
+
+	adminEmail := deref(tenant.AdminEmail)
+	adminPhone := deref(tenant.AdminPhone)
+	if adminEmail == "" && adminPhone == "" {
+		return apperr.New(apperr.CodeInvalidArgument, "tenant has no recorded admin identifier")
+	}
+
+	scopeCtx := tenancy.WithScope(ctx, tenancy.Scope{
+		TenantID: id,
+		Actor:    tenancy.ActorTenant,
+	})
+	var admin User
+	err = s.tenant.Read(scopeCtx, func(tx tenancy.Tx) error {
+		query := tx.Model(&User{})
+		if adminEmail != "" {
+			query = query.Where("email = ?", adminEmail)
+		} else {
+			query = query.Where("phone = ?", adminPhone)
+		}
+
+		return query.First(&admin)
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return apperr.New(apperr.CodeInvalidArgument, "tenant admin not found; use platform retry to re-provision")
+	}
+	if err != nil {
+		return apperr.Wrap(err, apperr.CodeInternal, "load tenant admin")
+	}
+
+	if err := s.platform.Tx(ctx, func(tx tenancy.Tx) error {
+		return tx.Where("id = ?", id).Update(&Tenant{}, map[string]any{"provision_status": ProvisionRunning})
+	}); err != nil {
+		return apperr.Wrap(err, apperr.CodeInternal, "mark provisioning")
+	}
+	s.recordStep(ctx, id, "provision_retry_queued")
+
+	seed := adminSeed{
+		UserID:      admin.ID,
+		Email:       adminEmail,
+		Phone:       adminPhone,
+		DisplayName: admin.DisplayName,
+		TenantName:  tenant.Name,
+		Timezone:    tenant.Timezone,
+		Locale:      tenant.Locale,
+	}
+	if err := s.provision(ctx, id, seed, false); err != nil {
+		s.markFailed(ctx, id, err)
+		return apperr.Wrap(err, apperr.CodeTenantProvision, "resume provision failed")
+	}
+	s.recordStep(ctx, id, "tenant_bootstrapped")
+
+	if err := s.indexAdmin(ctx, id, seed); err != nil {
+		s.markFailed(ctx, id, err)
+		return apperr.Wrap(err, apperr.CodeTenantProvision, "index tenant admin failed")
+	}
+	s.recordStep(ctx, id, "identity_indexed")
+
+	activated := map[string]any{
+		"provision_status": ProvisionSucceeded,
+		"provision_step":   "done",
+	}
+	if tenant.Status == StatusPending {
+		activated["status"] = StatusActive
+	}
+	if err := s.platform.Tx(ctx, func(tx tenancy.Tx) error {
+		return tx.Where("id = ?", id).Update(&Tenant{}, activated)
+	}); err != nil {
+		return apperr.Wrap(err, apperr.CodeInternal, "activate tenant")
+	}
+
+	s.recordAudit(ctx, audit.Entry{
+		Category:   audit.CategoryTenant,
+		Action:     audit.ActionTenantRetry,
+		ObjectType: "tenant",
+		ObjectID:   id,
+		Summary:    "异步续跑开通租户 " + tenant.Name,
+		After:      map[string]any{"provision_status": ProvisionSucceeded},
+	})
+
+	return nil
+}
+
 // ResetAdminPassword 重置租户管理员密码；旧令牌因 token_version 递增立即失效。
 func (s *Service) ResetAdminPassword(ctx context.Context, id string) (*Tenant, string, error) {
 	tenant, err := s.Get(ctx, id)
 	if err != nil {
 		return nil, "", err
 	}
-	if tenant.AdminEmail == nil || *tenant.AdminEmail == "" {
-		return nil, "", apperr.New(apperr.CodeInvalidArgument, "tenant has no recorded admin email")
+	adminEmail := deref(tenant.AdminEmail)
+	adminPhone := deref(tenant.AdminPhone)
+	if adminEmail == "" && adminPhone == "" {
+		return nil, "", apperr.New(apperr.CodeInvalidArgument, "tenant has no recorded admin identifier")
 	}
 
 	password, err := generatePassword()
@@ -411,7 +540,11 @@ func (s *Service) ResetAdminPassword(ctx context.Context, id string) (*Tenant, s
 	scopeCtx := tenancy.WithScope(ctx, tenancy.Scope{TenantID: id, Actor: tenancy.ActorTenant})
 	err = s.tenant.Tx(scopeCtx, func(tx tenancy.Tx) error {
 		var user User
-		if err := tx.Where("email = ?", *tenant.AdminEmail).First(&user); err != nil {
+		query := tx.Where("email = ?", adminEmail)
+		if adminEmail == "" {
+			query = tx.Where("phone = ?", adminPhone)
+		}
+		if err := query.First(&user); err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return apperr.New(apperr.CodeTenantNotFound, "tenant admin user not found")
 			}
@@ -436,7 +569,7 @@ func (s *Service) ResetAdminPassword(ctx context.Context, id string) (*Tenant, s
 		ObjectType: "tenant",
 		ObjectID:   id,
 		Summary:    "重置租户管理员密码 " + tenant.Name,
-		After:      map[string]any{"admin_email": deref(tenant.AdminEmail)},
+		After:      map[string]any{"admin_email": adminEmail, "admin_phone": adminPhone},
 	})
 
 	return tenant, password, nil
@@ -495,6 +628,7 @@ func (s *Service) Users(ctx context.Context, id string) ([]TenantUserOutput, err
 		out = append(out, TenantUserOutput{
 			ID:                 user.ID,
 			Email:              user.Email,
+			Phone:              deref(user.Phone),
 			DisplayName:        user.DisplayName,
 			Status:             user.Status,
 			Roles:              codes,
@@ -633,32 +767,58 @@ func (s *Service) Archive(ctx context.Context, id string) error {
 	return nil
 }
 
-// ensureEmailAvailable 校验管理员邮箱未被其他租户占用。
-func (s *Service) ensureEmailAvailable(ctx context.Context, email string) error {
-	if s.identities == nil || email == "" {
+// ensureIdentifierAvailable 校验管理员邮箱 / 手机号未被其他租户占用。
+func (s *Service) ensureIdentifierAvailable(ctx context.Context, email, phone string) error {
+	if s.identities == nil {
 		return nil
 	}
 
-	_, err := s.identities.Lookup(ctx, identity.TypeEmail, email)
-	if err == nil {
-		return apperr.New(apperr.CodeConflict, "该邮箱已被其他账号使用")
-	}
-	if appErr := apperr.From(err); appErr != nil && appErr.Code == apperr.CodeNotFound {
-		return nil
+	checks := []struct {
+		kind  string
+		value string
+		label string
+	}{
+		{identity.TypeEmail, email, "邮箱"},
+		{identity.TypePhone, phone, "手机号"},
 	}
 
-	return apperr.Wrap(err, apperr.CodeInternal, "check admin email")
+	for _, item := range checks {
+		if item.value == "" {
+			continue
+		}
+
+		_, err := s.identities.Lookup(ctx, item.kind, item.value)
+		if err == nil {
+			return apperr.New(apperr.CodeConflict, "该"+item.label+"已被其他账号使用")
+		}
+		if appErr := apperr.From(err); appErr != nil && appErr.Code == apperr.CodeNotFound {
+			continue
+		}
+
+		return apperr.Wrap(err, apperr.CodeInternal, "check admin identifier")
+	}
+
+	return nil
 }
 
-// indexAdmin 把管理员邮箱登记进全局索引（失败可经开通重试或对账修复）。
+// indexAdmin 把管理员邮箱 / 手机号登记进全局索引（失败可经开通重试或对账修复）。
 func (s *Service) indexAdmin(ctx context.Context, tenantID string, admin adminSeed) error {
 	if s.identities == nil {
 		return nil
 	}
 
-	return s.identities.Ensure(ctx, tenantID, admin.UserID, []identity.Identifier{
-		{Type: identity.TypeEmail, Value: admin.Email},
-	})
+	identifiers := make([]identity.Identifier, 0, 2)
+	if admin.Email != "" {
+		identifiers = append(identifiers, identity.Identifier{Type: identity.TypeEmail, Value: admin.Email})
+	}
+	if admin.Phone != "" {
+		identifiers = append(identifiers, identity.Identifier{Type: identity.TypePhone, Value: admin.Phone})
+	}
+	if len(identifiers) == 0 {
+		return nil
+	}
+
+	return s.identities.Ensure(ctx, tenantID, admin.UserID, identifiers)
 }
 
 // recordStep 追加一条成功事件并更新当前步骤，便于定位卡在哪一步。
@@ -719,6 +879,7 @@ func toOutput(tenant Tenant) TenantOutput {
 		ContactPhone:    deref(tenant.ContactPhone),
 		ContactEmail:    deref(tenant.ContactEmail),
 		AdminEmail:      deref(tenant.AdminEmail),
+		AdminPhone:      deref(tenant.AdminPhone),
 		ProvisionStatus: tenant.ProvisionStatus,
 		ProvisionStep:   deref(tenant.ProvisionStep),
 		ProvisionLog:    decodeProvisionLog(tenant.ProvisionLog),
@@ -769,8 +930,8 @@ func (in CreateInput) validate() error {
 	if in.Locale == "" {
 		return apperr.New(apperr.CodeInvalidArgument, "locale is required")
 	}
-	if in.AdminEmail == "" {
-		return apperr.New(apperr.CodeInvalidArgument, "admin_email is required")
+	if strings.TrimSpace(in.AdminEmail) == "" && strings.TrimSpace(in.AdminPhone) == "" {
+		return apperr.New(apperr.CodeInvalidArgument, "admin_email or admin_phone is required")
 	}
 	if in.AdminPassword != "" && len(in.AdminPassword) < 8 {
 		return apperr.New(apperr.CodeInvalidArgument, "admin_password must be at least 8 characters")
@@ -798,6 +959,15 @@ func defaultString(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// normalizePhone 规范化手机号；空值按“未提供”处理。
+func normalizePhone(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+
+	return identity.Normalize(identity.TypePhone, raw)
 }
 
 func normalizePage(page, size int) (int, int) {

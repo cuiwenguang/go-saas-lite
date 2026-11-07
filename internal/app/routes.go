@@ -3,6 +3,7 @@ package app
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -28,7 +29,9 @@ func NewRouter(cfg Config, log *slog.Logger, metrics *obs.Metrics, health *obs.H
 
 	engine := gin.New()
 	engine.Use(cors(cfg.Server.AllowedOrigins))
+	engine.Use(securityHeaders())
 	engine.Use(obs.Recover(log, metrics))
+	engine.Use(bodyLimit(cfg.Server.MaxBodyMB))
 	engine.Use(response.RequestID())
 	engine.Use(response.ClientIP())
 	if cfg.Trace.Enabled {
@@ -58,6 +61,7 @@ func NewRouter(cfg Config, log *slog.Logger, metrics *obs.Metrics, health *obs.H
 
 	// 三条入口链分开注册，平台 token、租户 token、Agent token 互不通用。
 	routeGroups := routes.Routes{
+		Site:           engine.Group(""),
 		Public:         public,
 		TenantAuth:     tenantAuth,
 		PlatformPublic: engine.Group("/api/platform/v1"),
@@ -67,8 +71,42 @@ func NewRouter(cfg Config, log *slog.Logger, metrics *obs.Metrics, health *obs.H
 	}
 
 	registerOAuthMetadata(engine)
+	registerDocs(engine, cfg.Docs.Enabled)
 
 	return engine, routeGroups
+}
+
+// securityHeaders 设置基础安全响应头。
+func securityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+		c.Header("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+		c.Next()
+	}
+}
+
+// bodyLimit 限制普通请求体大小；文件上传与 MCP 使用各自的上限。
+func bodyLimit(maxMB int) gin.HandlerFunc {
+	if maxMB <= 0 {
+		return func(c *gin.Context) { c.Next() }
+	}
+
+	limit := int64(maxMB) << 20
+	return func(c *gin.Context) {
+		if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead {
+			c.Next()
+			return
+		}
+		if strings.HasPrefix(c.Request.URL.Path, "/api/tenant/v1/files") {
+			c.Next()
+			return
+		}
+
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+		c.Next()
+	}
 }
 
 func requestLogger(log *slog.Logger) gin.HandlerFunc {

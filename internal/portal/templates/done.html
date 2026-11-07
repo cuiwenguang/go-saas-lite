@@ -1,0 +1,17 @@
+{{define "content"}}
+<section class="mx-auto max-w-2xl px-6 py-20">
+  <div class="rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm sm:p-12">
+    {{if .Pending}}
+    <h1 class="text-2xl font-semibold">注册已提交</h1>
+    <p class="mt-4 text-slate-600">租户编码：<span class="font-mono text-slate-900">{{.Code}}</span></p>
+    <p class="mt-2 text-sm text-slate-500">平台审核通过后即可登录。</p>
+    {{else}}
+    <h1 class="text-2xl font-semibold">租户已开通</h1>
+    <p class="mt-4 text-slate-600">租户编码：<span class="font-mono text-slate-900">{{.Code}}</span></p>
+    <p class="mt-2 text-sm text-slate-500">使用注册手机号与密码即可登录控制台。</p>
+    {{end}}
+
+    <a href="/login" class="btn-primary mt-8">去登录</a>
+  </div>
+</section>
+{{end}}

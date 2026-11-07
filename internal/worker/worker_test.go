@@ -41,12 +41,13 @@ func TestPurgeArchivedTenant(t *testing.T) {
 	ctx := context.Background()
 
 	hex := strings.ReplaceAll(uuid.Must(uuid.NewV7()).String(), "-", "")
+	code := "worker-" + hex[len(hex)-10:]
 	created, _, err := service.Create(ctx, tenants.CreateInput{
-		Code:          "worker-" + hex[len(hex)-10:],
+		Code:          code,
 		Name:          "Worker Tenant",
 		Timezone:      "Asia/Shanghai",
 		Locale:        "zh-CN",
-		AdminEmail:    "admin@worker.test",
+		AdminEmail:    code + "@worker.test",
 		AdminPassword: "password123",
 	})
 	if err != nil {
@@ -117,12 +118,13 @@ func TestExpireTenants(t *testing.T) {
 
 	create := func(prefix string) string {
 		hex := strings.ReplaceAll(uuid.Must(uuid.NewV7()).String(), "-", "")
+		code := prefix + "-" + hex[len(hex)-10:]
 		created, _, err := service.Create(ctx, tenants.CreateInput{
-			Code:          prefix + "-" + hex[len(hex)-10:],
+			Code:          code,
 			Name:          "Expire Tenant",
 			Timezone:      "Asia/Shanghai",
 			Locale:        "zh-CN",
-			AdminEmail:    "admin@" + prefix + ".test",
+			AdminEmail:    code + "@" + prefix + ".test",
 			AdminPassword: "password123",
 		})
 		if err != nil {
@@ -225,12 +227,13 @@ func TestPurgeSkipsTenantsInCoolingPeriod(t *testing.T) {
 	ctx := context.Background()
 
 	hex := strings.ReplaceAll(uuid.Must(uuid.NewV7()).String(), "-", "")
+	code := "cooling-" + hex[len(hex)-10:]
 	created, _, err := service.Create(ctx, tenants.CreateInput{
-		Code:       "cooling-" + hex[len(hex)-10:],
+		Code:       code,
 		Name:       "Cooling Tenant",
 		Timezone:   "Asia/Shanghai",
 		Locale:     "zh-CN",
-		AdminEmail: "admin@cooling.test",
+		AdminEmail: code + "@cooling.test",
 	})
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)

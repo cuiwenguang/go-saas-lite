@@ -27,6 +27,8 @@ type Claims struct {
 	TokenType string `json:"typ,omitempty"`
 	// Email 是操作人邮箱，仅用于审计展示，不参与授权判定。
 	Email string `json:"email,omitempty"`
+	// MustChangePassword 为真时，业务接口只放行改密相关路径。
+	MustChangePassword bool `json:"must_change_password,omitempty"`
 
 	jwt.RegisteredClaims
 }
@@ -93,7 +95,9 @@ type IssueOptions struct {
 	JTI string
 	// Email 是操作人邮箱，仅用于审计展示。
 	Email string
-	TTL   time.Duration
+	// MustChangePassword 写入 access 令牌，用于强制首次登录改密。
+	MustChangePassword bool
+	TTL                time.Duration
 }
 
 // AccessTTL 返回默认访问令牌有效期。
@@ -125,12 +129,13 @@ func (i *Issuer) Issue(opts IssueOptions) (string, error) {
 
 	now := i.now()
 	claims := Claims{
-		TenantID:  opts.TenantID,
-		ClientID:  opts.ClientID,
-		ActorType: string(opts.Actor),
-		Scope:     opts.Scope,
-		TokenType: opts.TokenType,
-		Email:     opts.Email,
+		TenantID:           opts.TenantID,
+		ClientID:           opts.ClientID,
+		ActorType:          string(opts.Actor),
+		Scope:              opts.Scope,
+		TokenType:          opts.TokenType,
+		Email:              opts.Email,
+		MustChangePassword: opts.MustChangePassword,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    i.issuer,
 			Subject:   opts.Subject,

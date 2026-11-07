@@ -35,6 +35,7 @@ type Tenant struct {
 	ContactPhone    *string    `gorm:"column:contact_phone" json:"contact_phone,omitempty"`
 	ContactEmail    *string    `gorm:"column:contact_email" json:"contact_email,omitempty"`
 	AdminEmail      *string    `gorm:"column:admin_email" json:"admin_email,omitempty"`
+	AdminPhone      *string    `gorm:"column:admin_phone" json:"admin_phone,omitempty"`
 	ProvisionStatus string     `gorm:"column:provision_status" json:"provision_status"`
 	ProvisionStep   *string    `gorm:"column:provision_step" json:"provision_step,omitempty"`
 	// ProvisionLog 存 jsonb 数组，由 service 解析成 []ProvisionEvent 输出。
@@ -85,6 +86,7 @@ type User struct {
 	ID                 string    `gorm:"column:id;primaryKey"`
 	TenantID           string    `gorm:"column:tenant_id"`
 	Email              string    `gorm:"column:email"`
+	Phone              *string   `gorm:"column:phone"`
 	DisplayName        string    `gorm:"column:display_name"`
 	PasswordHash       string    `gorm:"column:password_hash"`
 	Status             string    `gorm:"column:status"`
@@ -96,6 +98,18 @@ type User struct {
 
 // TableName 固定表名。
 func (User) TableName() string { return "users" }
+
+// Config 映射租户组 tenant_configs 表（开通时写默认配置）。
+type Config struct {
+	TenantID  string    `gorm:"column:tenant_id"`
+	Namespace string    `gorm:"column:namespace"`
+	Key       string    `gorm:"column:key"`
+	Value     string    `gorm:"column:value"`
+	UpdatedAt time.Time `gorm:"column:updated_at"`
+}
+
+// TableName 固定表名。
+func (Config) TableName() string { return "tenant_configs" }
 
 // UserRole 映射租户组 user_roles 表。
 type UserRole struct {

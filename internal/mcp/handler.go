@@ -118,6 +118,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) initialize(w http.ResponseWriter, callCtx Context, request Request) {
+	if h.quota != nil {
+		count, err := h.sessions.Count(callCtx.Ctx, callCtx.TenantID)
+		if err != nil {
+			writeRPCError(w, request.ID, RPCError{Code: CodeUpstream, Message: "count sessions failed"})
+			return
+		}
+		if err := h.quota.CheckCount(callCtx.Ctx, callCtx.TenantID, quota.MetricMCPSessions, count); err != nil {
+			writeRPCError(w, request.ID, RPCError{
+				Code:    CodeQuotaExceeded,
+				Message: err.Error(),
+				Data:    errorData(err),
+			})
+			return
+		}
+	}
+
 	session := Session{
 		ID:        NewSessionID(),
 		TenantID:  callCtx.TenantID,
@@ -217,6 +233,15 @@ func (h *Handler) callTool(w http.ResponseWriter, callCtx Context, request Reque
 		return
 	}
 
+	if err := validateInput(target.InputSchema, params.Arguments); err != nil {
+		writeRPCError(w, request.ID, RPCError{
+			Code:    CodeInvalidParams,
+			Message: "invalid arguments: " + err.Error(),
+		})
+		h.record(callCtx, params.Name, "failed", 0, "invalid_params")
+		return
+	}
+
 	if h.quota != nil {
 		if quotaErr := h.quota.Consume(callCtx.Ctx, callCtx.TenantID, quota.MetricMCPCalls, 1); quotaErr != nil {
 			code := CodeUpstream
@@ -224,6 +249,17 @@ func (h *Handler) callTool(w http.ResponseWriter, callCtx Context, request Reque
 				code = CodeQuotaExceeded
 			}
 			writeRPCError(w, request.ID, RPCError{Code: code, Message: quotaErr.Error(), Data: errorData(quotaErr)})
+			h.record(callCtx, params.Name, "failed", 0, "quota")
+			return
+		}
+
+		// 先看当日 token 额度是否已用尽，具体消耗在调用成功后计量。
+		if quotaErr := h.quota.Check(callCtx.Ctx, callCtx.TenantID, quota.MetricMCPToken, 1); quotaErr != nil {
+			writeRPCError(w, request.ID, RPCError{
+				Code:    CodeQuotaExceeded,
+				Message: quotaErr.Error(),
+				Data:    errorData(quotaErr),
+			})
 			h.record(callCtx, params.Name, "failed", 0, "quota")
 			return
 		}
@@ -237,6 +273,14 @@ func (h *Handler) callTool(w http.ResponseWriter, callCtx Context, request Reque
 		writeRPCError(w, request.ID, RPCError{Code: CodeUpstream, Message: callErr.Error(), Data: errorData(callErr)})
 		h.record(callCtx, params.Name, "failed", duration, "upstream")
 		return
+	}
+
+	if h.quota != nil {
+		// MCP 协议不返回 token 用量，按响应字节数估算（4 字节≈1 token）。
+		tokens := int64((len(result) + 3) / 4)
+		if tokens > 0 {
+			_ = h.quota.Incr(callCtx.Ctx, callCtx.TenantID, quota.MetricMCPToken, tokens)
+		}
 	}
 
 	h.record(callCtx, params.Name, "succeeded", duration, "")

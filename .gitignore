@@ -11,5 +11,6 @@ configs/*.local.yaml
 
 # vue
 web/node_modules/
+web/portal/node_modules/
 web/dist/
 

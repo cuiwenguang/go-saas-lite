@@ -21,10 +21,21 @@ func NewHandler(service *Service, authorizer authz.Authorizer) *Handler {
 // Register 挂到租户链上。
 func (h *Handler) Register(group *gin.RouterGroup) {
 	group.GET("/stats/overview", authz.Require(h.authorizer, authz.PermStatsRead), h.overview)
+	group.GET("/plan", authz.Require(h.authorizer, authz.PermStatsRead), h.plan)
 }
 
 func (h *Handler) overview(c *gin.Context) {
 	out, err := h.service.Overview(c.Request.Context())
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+
+	response.OK(c, out)
+}
+
+func (h *Handler) plan(c *gin.Context) {
+	out, err := h.service.Plan(c.Request.Context())
 	if err != nil {
 		response.Fail(c, err)
 		return

@@ -26,6 +26,94 @@ type Config struct {
 	Audit    AuditConfig
 	Tenancy  TenancyConfig
 	MCP      MCPConfig
+	Storage  StorageConfig
+	SMS      SMSConfig
+	Portal   PortalConfig
+	Queue    QueueConfig
+	Docs     DocsConfig
+}
+
+// DocsConfig 控制 OpenAPI 文档与 Swagger UI。
+type DocsConfig struct {
+	Enabled bool `koanf:"enabled"`
+}
+
+// QueueConfig 是 asynq 异步任务参数。
+type QueueConfig struct {
+	Enabled     bool `koanf:"enabled"`
+	Concurrency int  `koanf:"concurrency"`
+	// Heartbeat 开启一个每分钟的示例定时任务，仅用于验证调度器。
+	Heartbeat bool `koanf:"heartbeat"`
+}
+
+// PortalConfig 是营销门户与自助注册参数。
+type PortalConfig struct {
+	Enabled           bool   `koanf:"enabled"`
+	ConsoleURL        string `koanf:"console_url"`
+	AutoApprove       bool   `koanf:"auto_approve"`
+	SignupRatePerHour int    `koanf:"signup_rate_per_hour"`
+}
+
+// SMSConfig 是短信通道参数。
+type SMSConfig struct {
+	Provider string `koanf:"provider"` // dev
+}
+
+// StorageConfig 是对象存储参数。
+type StorageConfig struct {
+	Driver      string             `koanf:"driver"`        // local | cos | oss
+	MaxUploadMB int                `koanf:"max_upload_mb"` // 单文件上限
+	Local       LocalStorageConfig `koanf:"local"`
+	COS         COSStorageConfig   `koanf:"cos"`
+	OSS         OSSStorageConfig   `koanf:"oss"`
+}
+
+// LocalStorageConfig 是本地磁盘驱动参数。
+type LocalStorageConfig struct {
+	Root       string `koanf:"root"`
+	BaseURL    string `koanf:"base_url"`
+	SigningKey string `koanf:"signing_key"`
+}
+
+// COSStorageConfig 是腾讯云 COS 参数。
+type COSStorageConfig struct {
+	Bucket    string `koanf:"bucket"`
+	Region    string `koanf:"region"`
+	SecretID  string `koanf:"secret_id"`
+	SecretKey string `koanf:"secret_key"`
+	Endpoint  string `koanf:"endpoint"`
+}
+
+// OSSStorageConfig 是阿里云 OSS 参数。
+type OSSStorageConfig struct {
+	Bucket          string `koanf:"bucket"`
+	Endpoint        string `koanf:"endpoint"`
+	AccessKeyID     string `koanf:"access_key_id"`
+	AccessKeySecret string `koanf:"access_key_secret"`
+}
+
+func (c StorageConfig) validate() error {
+	switch strings.ToLower(strings.TrimSpace(c.Driver)) {
+	case "", "local":
+		if strings.TrimSpace(c.Local.Root) == "" {
+			return fmt.Errorf("storage.local.root is required")
+		}
+	case "cos":
+		if c.COS.Bucket == "" || c.COS.SecretID == "" || c.COS.SecretKey == "" {
+			return fmt.Errorf("storage.cos bucket, secret_id and secret_key are required")
+		}
+		if c.COS.Region == "" && c.COS.Endpoint == "" {
+			return fmt.Errorf("storage.cos region or endpoint is required")
+		}
+	case "oss":
+		if c.OSS.Bucket == "" || c.OSS.Endpoint == "" || c.OSS.AccessKeyID == "" || c.OSS.AccessKeySecret == "" {
+			return fmt.Errorf("storage.oss bucket, endpoint, access_key_id and access_key_secret are required")
+		}
+	default:
+		return fmt.Errorf("unsupported storage.driver %q", c.Driver)
+	}
+
+	return nil
 }
 
 // MCPConfig 是 MCP 网关参数。
@@ -88,6 +176,8 @@ type ServerConfig struct {
 	IdleTimeoutSec       int      `koanf:"idle_timeout_sec"`
 	ShutdownTimeoutSec   int      `koanf:"shutdown_timeout_sec"`
 	AllowedOrigins       []string `koanf:"allowed_origins"`
+	// MaxBodyMB 是普通 JSON 请求体上限；文件上传与 MCP 各自限制。
+	MaxBodyMB int `koanf:"max_body_mb"`
 }
 
 // LogConfig 是日志参数。
@@ -121,6 +211,7 @@ func DefaultConfig() Config {
 			WriteTimeoutSec:      30,
 			IdleTimeoutSec:       60,
 			ShutdownTimeoutSec:   15,
+			MaxBodyMB:            2,
 		},
 		Log: LogConfig{
 			Level:  "info",
@@ -148,6 +239,23 @@ func DefaultConfig() Config {
 		Audit: AuditConfig{
 			RetentionDays: 90,
 		},
+		Storage: StorageConfig{
+			Driver:      "local",
+			MaxUploadMB: 20,
+			Local: LocalStorageConfig{
+				Root:    "./data/files",
+				BaseURL: "http://localhost:8080/api/files/download",
+			},
+		},
+		SMS: SMSConfig{Provider: "dev"},
+		Portal: PortalConfig{
+			Enabled:           true,
+			ConsoleURL:        "http://localhost:5173",
+			AutoApprove:       true,
+			SignupRatePerHour: 5,
+		},
+		Queue: QueueConfig{Enabled: true, Concurrency: 10},
+		Docs:  DocsConfig{Enabled: true},
 	}
 }
 
@@ -191,6 +299,9 @@ func (c *Config) applyDefaults() {
 	if c.Auth.Secret == "" && c.App.Env == "dev" {
 		c.Auth.Secret = "dev-insecure-jwt-secret"
 	}
+	if c.Storage.Local.SigningKey == "" {
+		c.Storage.Local.SigningKey = c.Auth.Secret
+	}
 }
 
 func (c Config) validate() error {
@@ -220,6 +331,9 @@ func (c Config) validate() error {
 	}
 	if c.Worker.CoolingDays <= 0 {
 		return fmt.Errorf("worker.cooling_days must be positive")
+	}
+	if err := c.Storage.validate(); err != nil {
+		return err
 	}
 	switch strings.ToLower(c.Trace.Exporter) {
 	case "", "none", "stdout":

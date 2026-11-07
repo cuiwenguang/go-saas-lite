@@ -28,10 +28,11 @@ func (Identity) TableName() string { return "user_identities" }
 
 // User 是租户组 users 表的只读投影，仅用于登录校验与对账。
 type User struct {
-	ID       string `gorm:"column:id;primaryKey"`
-	TenantID string `gorm:"column:tenant_id"`
-	Email    string `gorm:"column:email"`
-	Status   string `gorm:"column:status"`
+	ID       string  `gorm:"column:id;primaryKey"`
+	TenantID string  `gorm:"column:tenant_id"`
+	Email    string  `gorm:"column:email"`
+	Phone    *string `gorm:"column:phone"`
+	Status   string  `gorm:"column:status"`
 }
 
 // TableName 固定表名。

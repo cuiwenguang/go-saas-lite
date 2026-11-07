@@ -20,12 +20,13 @@ func TestOverviewAndUsageTop(t *testing.T) {
 	service := stats.NewService(h.Platform)
 
 	tenantService := tenants.NewService(h.Platform, h.Tenant, nil, h.Identity())
+	code := "stats-" + strings.ReplaceAll(uuid.Must(uuid.NewV7()).String(), "-", "")[:10]
 	created, _, err := tenantService.Create(ctx, tenants.CreateInput{
-		Code:          "stats-" + strings.ReplaceAll(uuid.Must(uuid.NewV7()).String(), "-", "")[:10],
+		Code:          code,
 		Name:          "Stats Tenant",
 		Timezone:      "Asia/Shanghai",
 		Locale:        "zh-CN",
-		AdminEmail:    "admin@stats.test",
+		AdminEmail:    code + "@stats.test",
 		AdminPassword: "password123",
 	})
 	if err != nil {

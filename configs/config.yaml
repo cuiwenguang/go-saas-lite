@@ -11,6 +11,7 @@ server:
   idle_timeout_sec: 60
   shutdown_timeout_sec: 15
   allowed_origins: []
+  max_body_mb: 2
 
 log:
   level: info
@@ -53,3 +54,48 @@ mcp:
 # 生产用 SAAS_TENANCY__BASE_DOMAIN 覆盖；本地调试访问 demo.localhost 即可命中。
 tenancy:
   base_domain: "localhost"
+
+# 对象存储：local | cos | oss。
+# cos 需 bucket/region/secret_id/secret_key；oss 需 bucket/endpoint/access_key_id/access_key_secret。
+# 凭据生产环境请用 SAAS_STORAGE__COS__SECRET_ID 等环境变量覆盖，不要入库。
+# signing_key 仅本地驱动使用，生产务必通过 SAAS_STORAGE__LOCAL__SIGNING_KEY 配置。
+storage:
+  driver: local
+  max_upload_mb: 20
+  local:
+    root: "./data/files"
+    base_url: "http://localhost:8080/api/files/download"
+    signing_key: ""
+  cos:
+    bucket: ""
+    region: ""
+    secret_id: ""
+    secret_key: ""
+    endpoint: ""
+  oss:
+    bucket: ""
+    endpoint: ""
+    access_key_id: ""
+    access_key_secret: ""
+
+# 短信通道：dev 只把验证码写日志；后续接入阿里云/腾讯云时改 provider。
+sms:
+  provider: dev
+
+# 营销门户与自助注册。
+portal:
+  enabled: true
+  console_url: "http://localhost:5173"
+  auto_approve: true
+  signup_rate_per_hour: 5
+
+# asynq 异步任务；未配置 Redis 或 enabled=false 时自动降级。
+queue:
+  enabled: true
+  concurrency: 10
+  heartbeat: false
+
+# OpenAPI 文档与 Swagger UI。
+docs:
+  enabled: true
+

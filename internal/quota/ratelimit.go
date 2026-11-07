@@ -67,8 +67,8 @@ func Middleware(service *Service) gin.HandlerFunc {
 			return
 		}
 
-		if _, incrErr := service.usage.Incr(c.Request.Context(), scope.TenantID, MetricAPICalls, service.now(), 1); incrErr != nil {
-			c.Next()
+		if err := service.Consume(c.Request.Context(), scope.TenantID, MetricAPICalls, 1); err != nil {
+			response.Fail(c, err)
 			return
 		}
 

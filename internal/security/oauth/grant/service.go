@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/cuiwenguang/go-saas-lite/internal/mcp"
+	auditlog "github.com/cuiwenguang/go-saas-lite/internal/tenant/audit"
 	"github.com/cuiwenguang/go-saas-lite/pkg/apperr"
 	"github.com/cuiwenguang/go-saas-lite/pkg/tenancy"
 )
@@ -12,11 +14,13 @@ import (
 type Service struct {
 	db       tenancy.DB
 	platform tenancy.PlatformDB
+	sessions mcp.SessionStore
+	audit    *auditlog.Service
 }
 
-// NewService 创建授权服务。
-func NewService(db tenancy.DB, platform tenancy.PlatformDB) *Service {
-	return &Service{db: db, platform: platform}
+// NewService 创建授权服务；sessions / audit 为 nil 时对应能力关闭。
+func NewService(db tenancy.DB, platform tenancy.PlatformDB, sessions mcp.SessionStore, auditService *auditlog.Service) *Service {
+	return &Service{db: db, platform: platform, sessions: sessions, audit: auditService}
 }
 
 // List 返回当前用户的授权；includeRevoked 为真时含已撤销记录。
@@ -102,6 +106,22 @@ func (s *Service) Revoke(ctx context.Context, clientID string) error {
 	}
 	if affected == 0 {
 		return apperr.New(apperr.CodeNotFound, "authorization not found")
+	}
+
+	// 授权已撤销，会话作废失败不回滚数据库状态（readme 2.5）。
+	if s.sessions != nil {
+		_ = s.sessions.RevokeClient(ctx, scope.TenantID, scope.UserID, clientID)
+	}
+
+	if s.audit != nil {
+		_ = s.audit.Record(ctx, auditlog.Entry{
+			Category:   auditlog.CategoryOAuth,
+			Action:     auditlog.ActionOAuthGrantRevoke,
+			Level:      auditlog.LevelWarn,
+			ObjectType: "oauth_client",
+			ObjectID:   clientID,
+			Summary:    "撤销 OAuth 授权 " + clientID,
+		})
 	}
 
 	return nil

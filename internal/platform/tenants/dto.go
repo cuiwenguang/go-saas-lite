@@ -15,6 +15,7 @@ type CreateInput struct {
 	ContactPhone     string `json:"contact_phone"`
 	ContactEmail     string `json:"contact_email"`
 	AdminEmail       string `json:"admin_email"`
+	AdminPhone       string `json:"admin_phone"`
 	AdminDisplayName string `json:"admin_display_name"`
 	AdminPassword    string `json:"admin_password"`
 }
@@ -74,6 +75,7 @@ type CredentialOutput struct {
 type TenantUserOutput struct {
 	ID                 string    `json:"id"`
 	Email              string    `json:"email"`
+	Phone              string    `json:"phone,omitempty"`
 	DisplayName        string    `json:"display_name"`
 	Status             string    `json:"status"`
 	Roles              []string  `json:"roles"`
@@ -122,6 +124,7 @@ type TenantOutput struct {
 	ContactPhone    string           `json:"contact_phone,omitempty"`
 	ContactEmail    string           `json:"contact_email,omitempty"`
 	AdminEmail      string           `json:"admin_email,omitempty"`
+	AdminPhone      string           `json:"admin_phone,omitempty"`
 	ProvisionStatus string           `json:"provision_status"`
 	ProvisionStep   string           `json:"provision_step,omitempty"`
 	ProvisionLog    []ProvisionEvent `json:"provision_log"`

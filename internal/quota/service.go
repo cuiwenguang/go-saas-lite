@@ -44,7 +44,7 @@ func (s *Service) Limits(ctx context.Context, tenantID string) (Limits, error) {
 
 // Check 只校验不计数。
 func (s *Service) Check(ctx context.Context, tenantID string, metric Metric, delta int64) error {
-	limits, err := s.plans.Limits(ctx, tenantID)
+	limits, err := s.cachedLimits(ctx, tenantID)
 	if err != nil {
 		return err
 	}
@@ -77,6 +77,38 @@ func (s *Service) Consume(ctx context.Context, tenantID string, metric Metric, d
 
 	if _, err := s.usage.Incr(ctx, tenantID, metric, s.now(), delta); err != nil {
 		return apperr.Wrap(err, apperr.CodeInternal, "incr quota usage")
+	}
+
+	return nil
+}
+
+// Incr 直接累加，不做上限校验，用于事后计量（如 mcp_tokens）。
+func (s *Service) Incr(ctx context.Context, tenantID string, metric Metric, delta int64) error {
+	if _, err := s.usage.Incr(ctx, tenantID, metric, s.now(), delta); err != nil {
+		return apperr.Wrap(err, apperr.CodeInternal, "incr quota usage")
+	}
+
+	return nil
+}
+
+// CheckCount 校验「当前值」是否已触达上限，用于并发会话这类瞬时指标。
+// current 为当前占用数；上限为 0 表示不限。
+func (s *Service) CheckCount(ctx context.Context, tenantID string, metric Metric, current int64) error {
+	limits, err := s.cachedLimits(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+
+	limit := limits.ForMetric(metric)
+	if limit <= 0 {
+		return nil
+	}
+
+	if current >= limit {
+		return apperr.Newf(apperr.CodeQuotaExceeded, "quota exceeded for %s", metric).
+			WithMeta("metric", string(metric)).
+			WithMeta("limit", limit).
+			WithMeta("used", current)
 	}
 
 	return nil

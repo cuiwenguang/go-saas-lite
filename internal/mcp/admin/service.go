@@ -12,6 +12,7 @@ import (
 
 	"github.com/cuiwenguang/go-saas-lite/internal/mcp"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/authz"
+	auditlog "github.com/cuiwenguang/go-saas-lite/internal/tenant/audit"
 	"github.com/cuiwenguang/go-saas-lite/pkg/apperr"
 	"github.com/cuiwenguang/go-saas-lite/pkg/tenancy"
 )
@@ -20,11 +21,12 @@ import (
 type Service struct {
 	db     tenancy.DB
 	cipher *mcp.Cipher
+	audit  *auditlog.Service
 }
 
-// NewService 创建 MCP 管理服务。
-func NewService(db tenancy.DB, cipher *mcp.Cipher) *Service {
-	return &Service{db: db, cipher: cipher}
+// NewService 创建 MCP 管理服务；audit 为 nil 时不记审计。
+func NewService(db tenancy.DB, cipher *mcp.Cipher, auditService *auditlog.Service) *Service {
+	return &Service{db: db, cipher: cipher, audit: auditService}
 }
 
 // ListServers 返回全部上游服务及工具数量。
@@ -87,6 +89,15 @@ func (s *Service) CreateServer(ctx context.Context, in CreateServerInput) (*Serv
 
 	out := toServerOutput(server, 0)
 
+	s.recordAudit(ctx, auditlog.Entry{
+		Category:   auditlog.CategoryConfig,
+		Action:     auditlog.ActionMCPServerCreate,
+		ObjectType: "mcp_server",
+		ObjectID:   server.ID,
+		Summary:    "新增 MCP 服务 " + server.Name,
+		After:      map[string]any{"name": server.Name, "base_url": server.BaseURL, "enabled": server.Enabled},
+	})
+
 	return &out, nil
 }
 
@@ -143,12 +154,22 @@ func (s *Service) UpdateServer(ctx context.Context, id string, in UpdateServerIn
 
 	out := toServerOutput(*server, count)
 
+	s.recordAudit(ctx, auditlog.Entry{
+		Category:   auditlog.CategoryConfig,
+		Action:     auditlog.ActionMCPServerUpdate,
+		ObjectType: "mcp_server",
+		ObjectID:   server.ID,
+		Summary:    "修改 MCP 服务 " + server.Name,
+		After:      map[string]any{"name": server.Name, "base_url": server.BaseURL, "enabled": server.Enabled},
+	})
+
 	return &out, nil
 }
 
 // DeleteServer 删除上游服务及其工具配置。
 func (s *Service) DeleteServer(ctx context.Context, id string) error {
-	if _, err := s.server(ctx, id); err != nil {
+	server, err := s.server(ctx, id)
+	if err != nil {
 		return err
 	}
 
@@ -161,6 +182,15 @@ func (s *Service) DeleteServer(ctx context.Context, id string) error {
 	}); err != nil {
 		return apperr.Wrap(err, apperr.CodeInternal, "delete mcp server")
 	}
+
+	s.recordAudit(ctx, auditlog.Entry{
+		Category:   auditlog.CategoryConfig,
+		Action:     auditlog.ActionMCPServerDelete,
+		Level:      auditlog.LevelWarn,
+		ObjectType: "mcp_server",
+		ObjectID:   id,
+		Summary:    "删除 MCP 服务 " + server.Name,
+	})
 
 	return nil
 }
@@ -232,6 +262,15 @@ func (s *Service) UpdateTool(ctx context.Context, id string, in UpdateToolInput)
 	}
 
 	out := toToolOutput(tool)
+
+	s.recordAudit(ctx, auditlog.Entry{
+		Category:   auditlog.CategoryConfig,
+		Action:     auditlog.ActionMCPToolUpdate,
+		ObjectType: "mcp_tool",
+		ObjectID:   tool.ID,
+		Summary:    "修改 MCP 工具 " + tool.Name,
+		After:      map[string]any{"enabled": tool.Enabled, "required_perms": tool.RequiredPerms},
+	})
 
 	return &out, nil
 }
@@ -337,6 +376,13 @@ func normalizeBaseURL(raw string) (string, error) {
 	}
 
 	return trimmed, nil
+}
+
+func (s *Service) recordAudit(ctx context.Context, entry auditlog.Entry) {
+	if s.audit == nil {
+		return
+	}
+	_ = s.audit.Record(ctx, entry)
 }
 
 // normalizePerms 去重并校验权限点已登记，避免写出无法生效的配置。

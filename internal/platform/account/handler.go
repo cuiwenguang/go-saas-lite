@@ -59,6 +59,7 @@ func (h *Handler) login(c *gin.Context) {
 		return
 	}
 
+	h.setRefreshCookie(c, result.RefreshToken)
 	response.OK(c, result)
 }
 

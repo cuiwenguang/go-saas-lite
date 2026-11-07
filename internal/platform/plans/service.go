@@ -223,7 +223,7 @@ func toOutput(plan quota.Plan, tenantCount int64) PlanOutput {
 }
 
 func validateLimits(limits quota.Limits) error {
-	if limits.MaxUsers < 0 || limits.StorageGB < 0 || limits.APIQPS < 0 ||
+	if limits.MaxUsers < 0 || limits.StorageGB < 0 || limits.APIQPS < 0 || limits.APICalls < 0 ||
 		limits.MCPCalls < 0 || limits.MCPTokens < 0 || limits.MCPSessions < 0 {
 		return apperr.New(apperr.CodeInvalidArgument, "quota values cannot be negative")
 	}

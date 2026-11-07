@@ -33,6 +33,13 @@ type Cleaner interface {
 	Purge(ctx context.Context, tenantID string) error
 }
 
+// CleanerParams 收集业务侧注册的清理钩子（fx value group）。
+type CleanerParams struct {
+	fx.In
+
+	Cleaners []Cleaner `group:"tenant_cleaners"`
+}
+
 // Worker 周期性执行维护任务。
 type Worker struct {
 	platform tenancy.PlatformDB
@@ -55,7 +62,9 @@ func New(
 	tenantDB tenancy.DB,
 	client *redis.Client,
 	log *slog.Logger,
+	cleaners CleanerParams,
 ) *Worker {
+	opts.Cleaners = append(opts.Cleaners, cleaners.Cleaners...)
 	w := NewRunner(opts, platform, tenantDB, client, log)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -247,6 +256,11 @@ func (w *Worker) PurgeArchived(ctx context.Context) (int, error) {
 	}
 
 	return purged, firstErr
+}
+
+// PurgeTenant 立即清理指定租户，供异步任务调用。
+func (w *Worker) PurgeTenant(ctx context.Context, tenantID string) error {
+	return w.purgeTenant(ctx, tenantID)
 }
 
 // purgeTenant 删除框架自带的租户数据，并标记 tenants.deleted_at。

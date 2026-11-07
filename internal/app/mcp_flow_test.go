@@ -56,10 +56,11 @@ func newMCPFixture(t *testing.T) *mcpFixture {
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
+	h.ClearMustChangePassword(t, created.ID, email)
 
 	keys := apikey.NewService(h.Platform)
 	authorizer := authz.NewService(authz.NewGormSource(h.Tenant))
-	account := account.NewHandler(account.NewService(h.Tenant, h.Platform, issuer, keys, h.Identity()), authorizer, account.Options{})
+	account := account.NewHandler(account.NewService(h.Tenant, h.Platform, issuer, keys, h.Identity(), nil, nil, nil), authorizer, account.Options{})
 
 	mcpHandler := mcp.NewHandler(mcp.Options{
 		Provider:   mcp.NewGateway(h.Tenant),

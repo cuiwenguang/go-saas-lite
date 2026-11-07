@@ -40,6 +40,8 @@ func (h *Handler) RegisterPublic(group *gin.RouterGroup) {
 	session.POST("/login", h.login)
 	session.POST("/refresh", h.refresh)
 	session.POST("/logout", h.logout)
+	session.POST("/otp/send", h.sendCode)
+	session.POST("/password/reset", h.resetPassword)
 }
 
 // Register 挂需要租户令牌的接口。
@@ -68,6 +70,36 @@ func (h *Handler) login(c *gin.Context) {
 
 	h.setRefreshCookie(c, result.RefreshToken)
 	response.OK(c, result)
+}
+
+func (h *Handler) sendCode(c *gin.Context) {
+	var req SendCodeInput
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Fail(c, apperr.New(apperr.CodeInvalidArgument, "invalid request body"))
+		return
+	}
+
+	if err := h.service.SendCode(c.Request.Context(), req); err != nil {
+		response.Fail(c, err)
+		return
+	}
+
+	response.OK(c, gin.H{"sent": true})
+}
+
+func (h *Handler) resetPassword(c *gin.Context) {
+	var req ResetPasswordInput
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Fail(c, apperr.New(apperr.CodeInvalidArgument, "invalid request body"))
+		return
+	}
+
+	if err := h.service.ResetPassword(c.Request.Context(), req); err != nil {
+		response.Fail(c, err)
+		return
+	}
+
+	response.OK(c, gin.H{"ok": true})
 }
 
 func (h *Handler) refresh(c *gin.Context) {

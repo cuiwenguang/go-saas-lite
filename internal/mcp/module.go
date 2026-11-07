@@ -27,6 +27,7 @@ func Module(opts ModuleOptions) fx.Option {
 			newCipher,
 			newGateway,
 			NewCallLog,
+			newSessionStore,
 			newHandler,
 		),
 		fx.Invoke(registerRoutes),
@@ -42,19 +43,23 @@ func newGateway(db tenancy.DB, cipher *Cipher) *Gateway {
 	return NewGateway(db).WithCipher(cipher)
 }
 
-// newHandler 组装 MCP 端点；Redis 不可用时退化为内存会话。
+// newSessionStore 创建会话存储；Redis 不可用时退化为内存实现。
+func newSessionStore(client *redis.Client) SessionStore {
+	if client != nil {
+		return NewRedisSessions(client, 30*time.Minute)
+	}
+
+	return NewMemorySessions()
+}
+
+// newHandler 组装 MCP 端点。
 func newHandler(
 	gateway *Gateway,
 	authorizer authz.Authorizer,
-	client *redis.Client,
 	calls *CallLog,
 	quotaService *quota.Service,
+	sessions SessionStore,
 ) *Handler {
-	var sessions SessionStore = NewMemorySessions()
-	if client != nil {
-		sessions = NewRedisSessions(client, 30*time.Minute)
-	}
-
 	return NewHandler(Options{
 		Provider:   gateway,
 		Authorizer: authorizer,

@@ -13,8 +13,10 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
+	"github.com/cuiwenguang/go-saas-lite/internal/quota"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/authz"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/identity"
+	auditlog "github.com/cuiwenguang/go-saas-lite/internal/tenant/audit"
 	"github.com/cuiwenguang/go-saas-lite/pkg/apperr"
 	"github.com/cuiwenguang/go-saas-lite/pkg/tenancy"
 )
@@ -29,11 +31,13 @@ const (
 type Service struct {
 	db         tenancy.DB
 	identities *identity.Service
+	quota      *quota.Service
+	audit      *auditlog.Service
 }
 
-// NewService 创建成员服务。
-func NewService(db tenancy.DB, identities *identity.Service) *Service {
-	return &Service{db: db, identities: identities}
+// NewService 创建成员服务；quota / audit 为 nil 时对应能力关闭。
+func NewService(db tenancy.DB, identities *identity.Service, quotaService *quota.Service, auditService *auditlog.Service) *Service {
+	return &Service{db: db, identities: identities, quota: quotaService, audit: auditService}
 }
 
 // List 分页返回成员及其角色。
@@ -50,7 +54,7 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]UserOutput, in
 		}
 		if keyword := strings.ToLower(strings.TrimSpace(filter.Keyword)); keyword != "" {
 			like := "%" + keyword + "%"
-			query = query.Where("LOWER(email) LIKE ? OR LOWER(display_name) LIKE ?", like, like)
+			query = query.Where("LOWER(email) LIKE ? OR LOWER(COALESCE(phone, '')) LIKE ? OR LOWER(display_name) LIKE ?", like, like, like)
 		}
 		if err := query.Count(&total); err != nil {
 			return err
@@ -78,8 +82,12 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]UserOutput, in
 // Create 新建成员：密码为空时生成一次性初始密码，并要求首次登录改密。
 func (s *Service) Create(ctx context.Context, in CreateInput) (*CredentialOutput, error) {
 	email := strings.ToLower(strings.TrimSpace(in.Email))
-	if email == "" {
-		return nil, apperr.New(apperr.CodeInvalidArgument, "email is required")
+	phone, err := normalizeMemberPhone(in.Phone)
+	if err != nil {
+		return nil, err
+	}
+	if email == "" && phone == "" {
+		return nil, apperr.New(apperr.CodeInvalidArgument, "email or phone is required")
 	}
 	roleCode := strings.TrimSpace(in.Role)
 	if roleCode == "" {
@@ -87,6 +95,10 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*CredentialOutput
 	}
 	if roleCode != authz.RoleAdmin && roleCode != authz.RoleMember {
 		return nil, apperr.New(apperr.CodeInvalidArgument, "role must be admin or member")
+	}
+
+	if err := s.checkUserQuota(ctx); err != nil {
+		return nil, err
 	}
 
 	password := in.Password
@@ -101,8 +113,8 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*CredentialOutput
 		return nil, apperr.New(apperr.CodeInvalidArgument, "password must be at least 8 characters")
 	}
 
-	// 邮箱全局唯一：先查索引，避免写索引时才撞唯一键。
-	if err := s.ensureEmailAvailable(ctx, email); err != nil {
+	// 登录标识全局唯一：先查索引，避免写索引时才撞唯一键。
+	if err := s.ensureIdentifierAvailable(ctx, email, phone); err != nil {
 		return nil, err
 	}
 
@@ -114,11 +126,15 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*CredentialOutput
 	displayName := strings.TrimSpace(in.DisplayName)
 	if displayName == "" {
 		displayName = email
+		if displayName == "" {
+			displayName = phone
+		}
 	}
 
 	user := User{
 		ID:                 uuid.Must(uuid.NewV7()).String(),
 		Email:              email,
+		Phone:              optionalString(phone),
 		DisplayName:        displayName,
 		PasswordHash:       string(hash),
 		Status:             statusActive,
@@ -142,7 +158,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*CredentialOutput
 		return nil, conflictOrWrap(err, "create member")
 	}
 
-	if err := s.indexEmail(ctx, user); err != nil {
+	if err := s.indexIdentifiers(ctx, user); err != nil {
 		// 索引登记失败时回滚刚建的用户，避免出现“用户存在但登不进来”的脏数据。
 		s.deleteUser(ctx, user.ID)
 
@@ -154,7 +170,52 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*CredentialOutput
 		return nil, err
 	}
 
+	s.recordAudit(ctx, auditlog.Entry{
+		Category:   auditlog.CategorySecurity,
+		Action:     auditlog.ActionUserCreate,
+		ObjectType: "user",
+		ObjectID:   user.ID,
+		Summary:    "创建成员 " + displayName,
+		After:      map[string]any{"email": email, "phone": phone, "role": roleCode},
+	})
+
 	return &CredentialOutput{User: *out, InitialPassword: password}, nil
+}
+
+// checkUserQuota 校验租户用户数是否已达套餐上限；上限为 0 或未配置配额服务时跳过。
+func (s *Service) checkUserQuota(ctx context.Context) error {
+	if s.quota == nil {
+		return nil
+	}
+
+	scope, err := tenancy.ScopeFrom(ctx)
+	if err != nil {
+		return err
+	}
+
+	limits, err := s.quota.Limits(ctx, scope.TenantID)
+	if err != nil {
+		return err
+	}
+	if limits.MaxUsers <= 0 {
+		return nil
+	}
+
+	var count int64
+	if err := s.db.Read(ctx, func(tx tenancy.Tx) error {
+		return tx.Model(&User{}).Count(&count)
+	}); err != nil {
+		return apperr.Wrap(err, apperr.CodeInternal, "count tenant users")
+	}
+
+	if count >= int64(limits.MaxUsers) {
+		return apperr.Newf(apperr.CodeQuotaExceeded, "user limit reached").
+			WithMeta("metric", "max_users").
+			WithMeta("limit", limits.MaxUsers).
+			WithMeta("used", count)
+	}
+
+	return nil
 }
 
 // Update 修改姓名或状态；停用最后一个管理员会被拒绝。
@@ -194,7 +255,21 @@ func (s *Service) Update(ctx context.Context, id string, in UpdateInput) (*UserO
 		return nil, apperr.Wrap(err, apperr.CodeInternal, "update member")
 	}
 
-	return s.get(ctx, id)
+	updated, err := s.get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	s.recordAudit(ctx, auditlog.Entry{
+		Category:   auditlog.CategorySecurity,
+		Action:     auditlog.ActionUserUpdate,
+		ObjectType: "user",
+		ObjectID:   id,
+		Summary:    "修改成员 " + updated.DisplayName,
+		Before:     map[string]any{"display_name": user.DisplayName, "status": user.Status},
+		After:      map[string]any{"display_name": updated.DisplayName, "status": updated.Status},
+	})
+
+	return updated, nil
 }
 
 // ResetPassword 重置成员密码，返回一次性初始密码。
@@ -222,6 +297,15 @@ func (s *Service) ResetPassword(ctx context.Context, id string) (string, error) 
 	}); err != nil {
 		return "", apperr.Wrap(err, apperr.CodeInternal, "reset password")
 	}
+
+	s.recordAudit(ctx, auditlog.Entry{
+		Category:   auditlog.CategorySecurity,
+		Action:     auditlog.ActionUserResetPassword,
+		Level:      auditlog.LevelWarn,
+		ObjectType: "user",
+		ObjectID:   id,
+		Summary:    "重置成员密码",
+	})
 
 	return password, nil
 }
@@ -287,7 +371,20 @@ func (s *Service) SetRoles(ctx context.Context, id string, codes []string) (*Use
 		return nil, apperr.Wrap(err, apperr.CodeInternal, "bind roles")
 	}
 
-	return s.get(ctx, id)
+	updated, err := s.get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	s.recordAudit(ctx, auditlog.Entry{
+		Category:   auditlog.CategorySecurity,
+		Action:     auditlog.ActionUserSetRoles,
+		ObjectType: "user",
+		ObjectID:   id,
+		Summary:    "变更成员角色 " + updated.DisplayName,
+		After:      map[string]any{"roles": updated.Roles},
+	})
+
+	return updated, nil
 }
 
 // Roles 返回内置角色（只读）。
@@ -312,32 +409,58 @@ func (s *Service) Roles(ctx context.Context) ([]RoleOutput, error) {
 	return out, nil
 }
 
-// ensureEmailAvailable 校验邮箱未被任何租户占用（v1 一人一租户）。
-func (s *Service) ensureEmailAvailable(ctx context.Context, email string) error {
+// ensureIdentifierAvailable 校验邮箱 / 手机号未被任何租户占用（v1 一人一租户）。
+func (s *Service) ensureIdentifierAvailable(ctx context.Context, email, phone string) error {
 	if s.identities == nil {
 		return nil
 	}
 
-	_, err := s.identities.Lookup(ctx, identity.TypeEmail, email)
-	if err == nil {
-		return apperr.New(apperr.CodeConflict, "该邮箱已被其他账号使用")
-	}
-	if appErr := apperr.From(err); appErr != nil && appErr.Code == apperr.CodeNotFound {
-		return nil
+	checks := []struct {
+		kind  string
+		value string
+		label string
+	}{
+		{identity.TypeEmail, email, "邮箱"},
+		{identity.TypePhone, phone, "手机号"},
 	}
 
-	return apperr.Wrap(err, apperr.CodeInternal, "check member email")
+	for _, item := range checks {
+		if item.value == "" {
+			continue
+		}
+
+		_, err := s.identities.Lookup(ctx, item.kind, item.value)
+		if err == nil {
+			return apperr.New(apperr.CodeConflict, "该"+item.label+"已被其他账号使用")
+		}
+		if appErr := apperr.From(err); appErr != nil && appErr.Code == apperr.CodeNotFound {
+			continue
+		}
+
+		return apperr.Wrap(err, apperr.CodeInternal, "check member identifier")
+	}
+
+	return nil
 }
 
-// indexEmail 把成员邮箱登记进全局登录索引。
-func (s *Service) indexEmail(ctx context.Context, user User) error {
+// indexIdentifiers 把成员邮箱 / 手机号登记进全局登录索引。
+func (s *Service) indexIdentifiers(ctx context.Context, user User) error {
 	if s.identities == nil {
 		return nil
 	}
 
-	return s.identities.Ensure(ctx, user.TenantID, user.ID, []identity.Identifier{
-		{Type: identity.TypeEmail, Value: user.Email},
-	})
+	identifiers := make([]identity.Identifier, 0, 2)
+	if user.Email != "" {
+		identifiers = append(identifiers, identity.Identifier{Type: identity.TypeEmail, Value: user.Email})
+	}
+	if user.Phone != nil && *user.Phone != "" {
+		identifiers = append(identifiers, identity.Identifier{Type: identity.TypePhone, Value: *user.Phone})
+	}
+	if len(identifiers) == 0 {
+		return nil
+	}
+
+	return s.identities.Ensure(ctx, user.TenantID, user.ID, identifiers)
 }
 
 // deleteUser 补偿删除：索引登记失败时把刚建的用户与角色绑定一起清掉。
@@ -467,6 +590,7 @@ func toOutput(user User, roles []string) UserOutput {
 	return UserOutput{
 		ID:                 user.ID,
 		Email:              user.Email,
+		Phone:              derefString(user.Phone),
 		DisplayName:        user.DisplayName,
 		Status:             user.Status,
 		Roles:              roles,
@@ -483,6 +607,35 @@ func parsePermissions(raw string) []string {
 	_ = json.Unmarshal([]byte(raw), &out)
 
 	return out
+}
+
+func (s *Service) recordAudit(ctx context.Context, entry auditlog.Entry) {
+	if s.audit == nil {
+		return
+	}
+	_ = s.audit.Record(ctx, entry)
+}
+
+func normalizeMemberPhone(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+
+	return identity.Normalize(identity.TypePhone, raw)
+}
+
+func optionalString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func containsCode(codes []string, want string) bool {

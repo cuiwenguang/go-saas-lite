@@ -78,6 +78,21 @@ func (s *Service) Overview(ctx context.Context) (*OverviewOutput, error) {
 	}, nil
 }
 
+// Plan 返回当前租户的套餐与限额。
+func (s *Service) Plan(ctx context.Context) (*PlanStats, error) {
+	scope, err := tenancy.ScopeFrom(ctx)
+	if err != nil || scope.TenantID == "" {
+		return nil, apperr.New(apperr.CodeUnauthenticated, "tenant identity required")
+	}
+
+	plan, err := s.planOf(ctx, scope.TenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &plan, nil
+}
+
 // planOf 读取租户套餐与限额；平台组查询必须显式带 tenant_id。
 func (s *Service) planOf(ctx context.Context, tenantID string) (PlanStats, error) {
 	out := PlanStats{Quota: map[string]any{}}

@@ -1,0 +1,1330 @@
+openapi: 3.1.0
+info:
+  title: go-saas-lite API
+  version: 1.0.0
+  description: |
+    面向 AI / MCP 服务的多租户 SaaS 底座。
+    普通接口返回 `{code, msg, data, request_id}`；MCP 端点按 JSON-RPC 2.0 返回。
+servers:
+  - url: http://localhost:8080
+    description: 本地开发
+tags:
+  - name: system
+    description: 健康检查与文档
+  - name: portal
+    description: 门户与自助注册
+  - name: tenant-auth
+    description: 租户登录与验证码
+  - name: tenant
+    description: 租户控制台
+  - name: platform-auth
+    description: 平台登录
+  - name: platform
+    description: 平台控制台
+  - name: oauth
+    description: Agent OAuth 2.1
+  - name: mcp
+    description: MCP 端点
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: 存活探针
+      security: []
+      responses:
+        '200': {description: OK}
+  /readyz:
+    get:
+      tags: [system]
+      summary: 就绪探针
+      security: []
+      responses:
+        '200': {description: OK}
+        '503': {description: 依赖不可用}
+  /metrics:
+    get:
+      tags: [system]
+      summary: Prometheus 指标
+      security: []
+      responses:
+        '200': {description: OK}
+  /openapi.yaml:
+    get:
+      tags: [system]
+      summary: OpenAPI 规范
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/yaml:
+              schema: {type: string}
+  /docs:
+    get:
+      tags: [system]
+      summary: Swagger UI
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            text/html:
+              schema: {type: string}
+  /.well-known/oauth-authorization-server:
+    get:
+      tags: [oauth]
+      summary: OAuth 授权服务器元数据
+      security: []
+      responses:
+        '200': {description: OK}
+  /.well-known/oauth-protected-resource:
+    get:
+      tags: [oauth]
+      summary: 受保护资源元数据
+      security: []
+      responses:
+        '200': {description: OK}
+
+  /:
+    get:
+      tags: [portal]
+      summary: 门户首页
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            text/html:
+              schema: {type: string}
+  /pricing:
+    get:
+      tags: [portal]
+      summary: 价格页
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            text/html:
+              schema: {type: string}
+  /signup:
+    get:
+      tags: [portal]
+      summary: 注册页
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            text/html:
+              schema: {type: string}
+    post:
+      tags: [portal]
+      summary: 提交注册
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [company_name, phone, code, password, accept_terms]
+              properties:
+                company_name: {type: string}
+                phone: {type: string}
+                code: {type: string}
+                password: {type: string, minLength: 8}
+                subdomain: {type: string}
+                accept_terms: {type: string}
+      responses:
+        '303': {description: 注册成功，跳转结果页}
+        '400': {description: 参数错误}
+        '429': {description: 请求过于频繁}
+  /signup/otp:
+    post:
+      tags: [portal]
+      summary: 发送注册验证码
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone]
+              properties:
+                phone: {type: string}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+        '429': {description: 发送过于频繁}
+  /signup/done:
+    get:
+      tags: [portal]
+      summary: 注册结果页
+      security: []
+      parameters:
+        - {name: code, in: query, schema: {type: string}}
+        - {name: pending, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            text/html:
+              schema: {type: string}
+  /login:
+    get:
+      tags: [portal]
+      summary: 跳转租户控制台登录
+      security: []
+      responses:
+        '302': {description: 跳转}
+  /terms:
+    get:
+      tags: [portal]
+      summary: 服务条款
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            text/html:
+              schema: {type: string}
+  /privacy:
+    get:
+      tags: [portal]
+      summary: 隐私政策
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            text/html:
+              schema: {type: string}
+  /portal.css:
+    get:
+      tags: [portal]
+      summary: 门户样式
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            text/css:
+              schema: {type: string}
+  /api/files/download:
+    get:
+      tags: [tenant]
+      summary: 本地驱动签名下载
+      security: []
+      parameters:
+        - {name: key, in: query, required: true, schema: {type: string}}
+        - {name: expires, in: query, required: true, schema: {type: string}}
+        - {name: sig, in: query, required: true, schema: {type: string}}
+      responses:
+        '200': {description: 文件内容}
+        '403': {description: 签名无效或过期}
+
+  /api/tenant/v1/auth/login:
+    post:
+      tags: [tenant-auth]
+      summary: 租户登录（邮箱/手机号 + 密码，或手机号 + 验证码）
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LoginInput'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LoginEnvelope'}
+        '401': {description: 凭证无效或账号锁定}
+  /api/tenant/v1/auth/refresh:
+    post:
+      tags: [tenant-auth]
+      summary: 刷新租户令牌
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LoginEnvelope'}
+  /api/tenant/v1/auth/logout:
+    post:
+      tags: [tenant-auth]
+      summary: 登出
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/auth/otp/send:
+    post:
+      tags: [tenant-auth]
+      summary: 发送验证码
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, scene]
+              properties:
+                phone: {type: string}
+                scene: {type: string, enum: [signup, login, reset]}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+        '429': {description: 发送过于频繁}
+  /api/tenant/v1/auth/password/reset:
+    post:
+      tags: [tenant-auth]
+      summary: 验证码重置密码
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, code, new_password]
+              properties:
+                phone: {type: string}
+                code: {type: string}
+                new_password: {type: string, minLength: 8}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+        '401': {description: 验证码无效}
+
+  /api/tenant/v1/me:
+    get:
+      tags: [tenant]
+      summary: 当前用户、租户与权限点
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/auth/password:
+    post:
+      tags: [tenant]
+      summary: 修改自己的密码
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [old_password, new_password]
+              properties:
+                old_password: {type: string}
+                new_password: {type: string, minLength: 8}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/api-keys:
+    get:
+      tags: [tenant]
+      summary: 当前用户的 API Key 列表
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+    post:
+      tags: [tenant]
+      summary: 创建 API Key（明文只返回一次）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/api-keys/{id}:
+    delete:
+      tags: [tenant]
+      summary: 撤销 API Key
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/users:
+    get:
+      tags: [tenant]
+      summary: 成员列表
+      parameters:
+        - {name: page, in: query, schema: {type: integer}}
+        - {name: size, in: query, schema: {type: integer}}
+        - {name: status, in: query, schema: {type: string}}
+        - {name: keyword, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PageEnvelope'}
+    post:
+      tags: [tenant]
+      summary: 新建成员
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: {type: string}
+                phone: {type: string}
+                display_name: {type: string}
+                password: {type: string}
+                role: {type: string, enum: [admin, member]}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+        '429': {description: 用户数已达套餐上限}
+  /api/tenant/v1/users/{id}:
+    patch:
+      tags: [tenant]
+      summary: 修改成员姓名或状态
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name: {type: string}
+                status: {type: string, enum: [active, disabled]}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/users/{id}/password:
+    post:
+      tags: [tenant]
+      summary: 重置成员密码
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/users/{id}/roles:
+    patch:
+      tags: [tenant]
+      summary: 替换成员角色
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [codes]
+              properties:
+                codes:
+                  type: array
+                  items: {type: string}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/roles:
+    get:
+      tags: [tenant]
+      summary: 内置角色列表
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/configs:
+    get:
+      tags: [tenant]
+      summary: 配置列表
+      parameters:
+        - {name: namespace, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/configs/{namespace}/{key}:
+    get:
+      tags: [tenant]
+      summary: 读取配置
+      parameters:
+        - {name: namespace, in: path, required: true, schema: {type: string}}
+        - {name: key, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+    put:
+      tags: [tenant]
+      summary: 写入配置
+      parameters:
+        - {name: namespace, in: path, required: true, schema: {type: string}}
+        - {name: key, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties:
+                value: {type: string}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+    delete:
+      tags: [tenant]
+      summary: 删除配置
+      parameters:
+        - {name: namespace, in: path, required: true, schema: {type: string}}
+        - {name: key, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/mcp/servers:
+    get:
+      tags: [tenant]
+      summary: 上游 MCP 服务列表
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+    post:
+      tags: [tenant]
+      summary: 新建上游 MCP 服务
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, base_url]
+              properties:
+                name: {type: string}
+                base_url: {type: string}
+                credential: {type: string}
+                enabled: {type: boolean}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/mcp/servers/{id}:
+    patch:
+      tags: [tenant]
+      summary: 修改上游服务
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+    delete:
+      tags: [tenant]
+      summary: 删除上游服务及其工具
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/mcp/tools:
+    get:
+      tags: [tenant]
+      summary: 工具列表
+      parameters:
+        - {name: server_id, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/mcp/tools/{id}:
+    patch:
+      tags: [tenant]
+      summary: 修改工具启停与所需权限
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: {type: boolean}
+                required_perms:
+                  type: array
+                  items: {type: string}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/mcp/calls:
+    get:
+      tags: [tenant]
+      summary: MCP 调用日志
+      parameters:
+        - {name: page, in: query, schema: {type: integer}}
+        - {name: size, in: query, schema: {type: integer}}
+        - {name: status, in: query, schema: {type: string}}
+        - {name: tool, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PageEnvelope'}
+  /api/tenant/v1/mcp:
+    post:
+      tags: [mcp]
+      summary: MCP Streamable HTTP 端点（JSON-RPC 2.0）
+      description: |
+        鉴权：用户级 API Key 或 aud=mcp 的 OAuth access token。
+        `initialize` 之后所有请求需带 `Mcp-Session-Id`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jsonrpc, method]
+              properties:
+                jsonrpc: {type: string, enum: ['2.0']}
+                id: {}
+                method:
+                  type: string
+                  enum: [initialize, ping, tools/list, tools/call]
+                params: {}
+      responses:
+        '200':
+          description: JSON-RPC 响应或 SSE 单帧
+  /api/tenant/v1/oauth/grants:
+    get:
+      tags: [tenant]
+      summary: Agent 授权列表
+      parameters:
+        - {name: include_revoked, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/oauth/grants/{client_id}:
+    delete:
+      tags: [tenant]
+      summary: 撤销 Agent 授权
+      parameters:
+        - {name: client_id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/oauth/authorize:
+    get:
+      tags: [oauth]
+      summary: OAuth 授权码（需租户登录态）
+      parameters:
+        - {name: client_id, in: query, required: true, schema: {type: string}}
+        - {name: redirect_uri, in: query, required: true, schema: {type: string}}
+        - {name: state, in: query, required: true, schema: {type: string}}
+        - {name: code_challenge, in: query, required: true, schema: {type: string}}
+        - {name: code_challenge_method, in: query, required: true, schema: {type: string, enum: [S256]}}
+        - {name: scope, in: query, schema: {type: string, enum: [mcp]}}
+      responses:
+        '302': {description: 回调地址}
+  /api/tenant/v1/oauth/register:
+    post:
+      tags: [oauth]
+      summary: 动态注册客户端
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [client_name, redirect_uris]
+              properties:
+                client_name: {type: string}
+                redirect_uris:
+                  type: array
+                  items: {type: string}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/oauth/token:
+    post:
+      tags: [oauth]
+      summary: 换取或刷新令牌
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                grant_type: {type: string, enum: [authorization_code, refresh_token]}
+                code: {type: string}
+                redirect_uri: {type: string}
+                client_id: {type: string}
+                code_verifier: {type: string}
+                refresh_token: {type: string}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenOutput'}
+  /api/tenant/v1/oauth/revoke:
+    post:
+      tags: [oauth]
+      summary: 撤销 refresh 令牌
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: {type: string}
+      responses:
+        '200': {description: OK}
+  /api/tenant/v1/stats/overview:
+    get:
+      tags: [tenant]
+      summary: 租户总览
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/plan:
+    get:
+      tags: [tenant]
+      summary: 当前套餐与限额
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/files:
+    get:
+      tags: [tenant]
+      summary: 文件列表
+      parameters:
+        - {name: biz, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+    post:
+      tags: [tenant]
+      summary: 上传文件
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                biz: {type: string}
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: {$ref: '#/components/schemas/FileOutput'}
+  /api/tenant/v1/files/{id}:
+    delete:
+      tags: [tenant]
+      summary: 删除文件
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/files/{id}/url:
+    get:
+      tags: [tenant]
+      summary: 获取签名下载地址
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: ttl, in: query, schema: {type: integer}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/tenant/v1/audit-logs:
+    get:
+      tags: [tenant]
+      summary: 租户内操作审计
+      parameters:
+        - {name: category, in: query, schema: {type: string}}
+        - {name: action, in: query, schema: {type: string}}
+        - {name: level, in: query, schema: {type: string}}
+        - {name: actor, in: query, schema: {type: string}}
+        - {name: from, in: query, schema: {type: string, format: date-time}}
+        - {name: to, in: query, schema: {type: string, format: date-time}}
+        - {name: page, in: query, schema: {type: integer, minimum: 1}}
+        - {name: size, in: query, schema: {type: integer, minimum: 1, maximum: 100}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: {$ref: '#/components/schemas/AuditLog'}
+                          total: {type: integer}
+                          page: {type: integer}
+                          size: {type: integer}
+
+  /api/platform/v1/auth/login:
+    post:
+      tags: [platform-auth]
+      summary: 平台登录
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: {type: string}
+                password: {type: string}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PlatformLoginEnvelope'}
+  /api/platform/v1/auth/refresh:
+    post:
+      tags: [platform-auth]
+      summary: 刷新平台令牌
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PlatformLoginEnvelope'}
+  /api/platform/v1/auth/logout:
+    post:
+      tags: [platform-auth]
+      summary: 平台登出
+      security: []
+      responses:
+        '200': {description: OK}
+  /api/platform/v1/me:
+    get:
+      tags: [platform]
+      summary: 平台账号与权限点
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/platform/v1/auth/password:
+    post:
+      tags: [platform]
+      summary: 修改平台密码
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [old_password, new_password]
+              properties:
+                old_password: {type: string}
+                new_password: {type: string, minLength: 8}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/platform/v1/tenants:
+    get:
+      tags: [platform]
+      summary: 租户列表
+      parameters:
+        - {name: page, in: query, schema: {type: integer}}
+        - {name: size, in: query, schema: {type: integer}}
+        - {name: status, in: query, schema: {type: string}}
+        - {name: keyword, in: query, schema: {type: string}}
+        - {name: plan_code, in: query, schema: {type: string}}
+        - {name: expire_before, in: query, schema: {type: string, format: date-time}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PageEnvelope'}
+    post:
+      tags: [platform]
+      summary: 开通租户
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name, timezone, locale]
+              properties:
+                code: {type: string}
+                name: {type: string}
+                timezone: {type: string}
+                locale: {type: string}
+                domain: {type: string}
+                subdomain: {type: string}
+                plan_code: {type: string}
+                admin_email: {type: string}
+                admin_phone: {type: string}
+                admin_password: {type: string}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/platform/v1/tenants/summary:
+    get:
+      tags: [platform]
+      summary: 租户状态计数
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/platform/v1/tenants/{id}:
+    get:
+      tags: [platform]
+      summary: 租户详情
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+    patch:
+      tags: [platform]
+      summary: 修改租户 / 续费
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+    delete:
+      tags: [platform]
+      summary: 归档租户
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/platform/v1/tenants/{id}/status:
+    patch:
+      tags: [platform]
+      summary: 状态流转
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: {type: string}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/platform/v1/tenants/{id}/retry:
+    post:
+      tags: [platform]
+      summary: 重试开通
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/platform/v1/tenants/{id}/admin-password:
+    post:
+      tags: [platform]
+      summary: 重置租户管理员密码
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/platform/v1/tenants/{id}/users:
+    get:
+      tags: [platform]
+      summary: 租户用户与角色
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/platform/v1/tenants/{id}/usage:
+    get:
+      tags: [platform]
+      summary: 租户配额与用量
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/platform/v1/plans:
+    get:
+      tags: [platform]
+      summary: 套餐列表
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+    post:
+      tags: [platform]
+      summary: 新建套餐
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name]
+              properties:
+                code: {type: string}
+                name: {type: string}
+                quota: {$ref: '#/components/schemas/QuotaLimits'}
+                enabled: {type: boolean}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/platform/v1/plans/{id}:
+    patch:
+      tags: [platform]
+      summary: 修改套餐
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string}
+                quota: {$ref: '#/components/schemas/QuotaLimits'}
+                enabled: {type: boolean}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/platform/v1/audit-logs:
+    get:
+      tags: [platform]
+      summary: 审计日志
+      parameters:
+        - {name: category, in: query, schema: {type: string}}
+        - {name: action, in: query, schema: {type: string}}
+        - {name: level, in: query, schema: {type: string}}
+        - {name: actor, in: query, schema: {type: string}}
+        - {name: object_id, in: query, schema: {type: string}}
+        - {name: from, in: query, schema: {type: string, format: date-time}}
+        - {name: to, in: query, schema: {type: string, format: date-time}}
+        - {name: page, in: query, schema: {type: integer}}
+        - {name: size, in: query, schema: {type: integer}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PageEnvelope'}
+  /api/platform/v1/stats/overview:
+    get:
+      tags: [platform]
+      summary: 平台总览
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /api/platform/v1/stats/usage-top:
+    get:
+      tags: [platform]
+      summary: 用量排行
+      parameters:
+        - {name: metric, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        code: {type: integer, example: 0}
+        msg: {type: string, example: ok}
+        data: {}
+        request_id: {type: string}
+    ErrorEnvelope:
+      type: object
+      properties:
+        code: {type: integer, example: 1000}
+        msg: {type: string}
+        data: {}
+        request_id: {type: string}
+    LoginInput:
+      type: object
+      properties:
+        email: {type: string}
+        phone: {type: string}
+        password: {type: string}
+        code: {type: string}
+    TokenOutput:
+      type: object
+      properties:
+        access_token: {type: string}
+        token_type: {type: string, example: Bearer}
+        expires_in: {type: integer, example: 3600}
+        refresh_token: {type: string}
+        scope: {type: string, example: mcp}
+    LoginEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                access_token: {type: string}
+                token_type: {type: string}
+                expires_in: {type: integer}
+                must_change_password: {type: boolean}
+    PlatformLoginEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                access_token: {type: string}
+                token_type: {type: string}
+                expires_in: {type: integer}
+                role: {type: string}
+    PageEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items: {}
+                total: {type: integer}
+                page: {type: integer}
+                size: {type: integer}
+    QuotaLimits:
+      type: object
+      properties:
+        max_users: {type: integer}
+        storage_gb: {type: integer}
+        api_qps: {type: integer}
+        api_calls: {type: integer}
+        mcp_calls: {type: integer}
+        mcp_tokens: {type: integer}
+        mcp_sessions: {type: integer}
+        features:
+          type: array
+          items: {type: string}
+    FileOutput:
+      type: object
+      properties:
+        id: {type: string}
+        key: {type: string}
+        biz: {type: string}
+        original_name: {type: string}
+        content_type: {type: string}
+        size_bytes: {type: integer}
+        created_at: {type: string, format: date-time}
+    AuditLog:
+      type: object
+      properties:
+        id: {type: string}
+        category: {type: string}
+        action: {type: string}
+        level: {type: string, enum: [info, warn]}
+        result: {type: string, enum: [success, failed]}
+        actor_id: {type: string}
+        actor_email: {type: string}
+        object_type: {type: string}
+        object_id: {type: string}
+        summary: {type: string}
+        before: {type: object, nullable: true}
+        after: {type: object, nullable: true}
+        request_id: {type: string}
+        ip: {type: string}
+        created_at: {type: string, format: date-time}

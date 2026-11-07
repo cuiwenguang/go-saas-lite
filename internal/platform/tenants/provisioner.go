@@ -20,8 +20,12 @@ import (
 type adminSeed struct {
 	UserID       string
 	Email        string
+	Phone        string
 	DisplayName  string
 	PasswordHash string
+	TenantName   string
+	Timezone     string
+	Locale       string
 }
 
 // provision 在租户连接上完成角色、管理员与绑定的创建。
@@ -56,8 +60,46 @@ func (s *Service) provision(ctx context.Context, tenantID string, admin adminSee
 			return fmt.Errorf("bind admin role: %w", err)
 		}
 
+		if err := ensureConfigs(tx, admin); err != nil {
+			return fmt.Errorf("ensure tenant configs: %w", err)
+		}
+
 		return nil
 	})
+}
+
+// ensureConfigs 写入默认租户配置；已存在的键不覆盖。
+func ensureConfigs(tx tenancy.Tx, admin adminSeed) error {
+	defaults := []struct {
+		namespace string
+		key       string
+		value     string
+	}{
+		{"general", "site_name", admin.TenantName},
+		{"general", "timezone", admin.Timezone},
+		{"general", "locale", admin.Locale},
+	}
+
+	for _, item := range defaults {
+		if item.value == "" {
+			continue
+		}
+
+		var existing Config
+		err := tx.Where("namespace = ? AND key = ?", item.namespace, item.key).First(&existing)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+
+		if err := tx.Create(&Config{Namespace: item.namespace, Key: item.key, Value: item.value}); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func ensureRole(tx tenancy.Tx, code string, perms []authz.Perm) (string, error) {
@@ -96,7 +138,12 @@ func ensureRole(tx tenancy.Tx, code string, perms []authz.Perm) (string, error) 
 
 func ensureUser(tx tenancy.Tx, admin adminSeed, reset bool) error {
 	var existing User
-	err := tx.Where("email = ?", admin.Email).First(&existing)
+	var err error
+	if admin.Email != "" {
+		err = tx.Where("email = ?", admin.Email).First(&existing)
+	} else {
+		err = tx.Where("phone = ?", admin.Phone).First(&existing)
+	}
 	switch {
 	case err == nil:
 		if !reset {
@@ -112,6 +159,7 @@ func ensureUser(tx tenancy.Tx, admin adminSeed, reset bool) error {
 		return tx.Create(&User{
 			ID:                 admin.UserID,
 			Email:              admin.Email,
+			Phone:              optional(admin.Phone),
 			DisplayName:        admin.DisplayName,
 			PasswordHash:       admin.PasswordHash,
 			Status:             "active",

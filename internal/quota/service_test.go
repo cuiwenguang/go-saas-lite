@@ -138,3 +138,74 @@ func TestUnknownTenantIsRejected(t *testing.T) {
 		t.Fatalf("want CodeTenantNotFound, got %v", err)
 	}
 }
+
+func TestAPICallsDailyLimit(t *testing.T) {
+	h := testutil.New(t)
+	client := redisClient(t)
+	service := quota.NewService(h.Platform, client)
+
+	tenantID := uniqueTenant(h, t, "quota-api-calls")
+	if err := h.SetPlan(t, tenantID, `{"api_calls":2}`); err != nil {
+		t.Fatalf("set plan: %v", err)
+	}
+
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if err := service.Consume(ctx, tenantID, quota.MetricAPICalls, 1); err != nil {
+			t.Fatalf("consume #%d: %v", i+1, err)
+		}
+	}
+
+	err := service.Consume(ctx, tenantID, quota.MetricAPICalls, 1)
+	if !apperr.Is(err, apperr.CodeQuotaExceeded) {
+		t.Fatalf("want CodeQuotaExceeded, got %v", err)
+	}
+}
+
+func TestIncrMCPTokensBypassesLimit(t *testing.T) {
+	h := testutil.New(t)
+	client := redisClient(t)
+	service := quota.NewService(h.Platform, client)
+
+	tenantID := uniqueTenant(h, t, "quota-incr-tokens")
+	if err := h.SetPlan(t, tenantID, `{"mcp_tokens":10}`); err != nil {
+		t.Fatalf("set plan: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := service.Incr(ctx, tenantID, quota.MetricMCPToken, 50); err != nil {
+		t.Fatalf("incr: %v", err)
+	}
+
+	used, err := service.Used(ctx, tenantID, quota.MetricMCPToken)
+	if err != nil {
+		t.Fatalf("used: %v", err)
+	}
+	if used != 50 {
+		t.Fatalf("want 50, got %d", used)
+	}
+
+	if err := service.Check(ctx, tenantID, quota.MetricMCPToken, 1); !apperr.Is(err, apperr.CodeQuotaExceeded) {
+		t.Fatalf("want CodeQuotaExceeded after overshoot, got %v", err)
+	}
+}
+
+func TestCheckCountSessions(t *testing.T) {
+	h := testutil.New(t)
+	client := redisClient(t)
+	service := quota.NewService(h.Platform, client)
+
+	tenantID := uniqueTenant(h, t, "quota-sessions")
+	if err := h.SetPlan(t, tenantID, `{"mcp_sessions":2}`); err != nil {
+		t.Fatalf("set plan: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := service.CheckCount(ctx, tenantID, quota.MetricMCPSessions, 1); err != nil {
+		t.Fatalf("1 session should be allowed: %v", err)
+	}
+
+	if err := service.CheckCount(ctx, tenantID, quota.MetricMCPSessions, 2); !apperr.Is(err, apperr.CodeQuotaExceeded) {
+		t.Fatalf("want CodeQuotaExceeded at limit, got %v", err)
+	}
+}

@@ -12,15 +12,18 @@ import (
 	"github.com/cuiwenguang/go-saas-lite/internal/mcp"
 	mcpadmin "github.com/cuiwenguang/go-saas-lite/internal/mcp/admin"
 	"github.com/cuiwenguang/go-saas-lite/internal/platform"
+	"github.com/cuiwenguang/go-saas-lite/internal/portal"
 	"github.com/cuiwenguang/go-saas-lite/internal/quota"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/apikey"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/auth"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/authz"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/identity"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/oauth"
+	"github.com/cuiwenguang/go-saas-lite/internal/security/otp"
 	"github.com/cuiwenguang/go-saas-lite/internal/tenant"
 	"github.com/cuiwenguang/go-saas-lite/internal/worker"
 	"github.com/cuiwenguang/go-saas-lite/pkg/obs"
+	"github.com/cuiwenguang/go-saas-lite/pkg/queue"
 )
 
 // New 组装 API 进程的依赖图。
@@ -36,12 +39,17 @@ func New(cfg Config) fx.Option {
 		authz.Module(),
 		apikey.Module(),
 		identity.Module(),
+		otp.Module(),
 		quota.Module(),
 		mcp.Module(mcp.ModuleOptions{CredentialKey: cfg.MCP.CredentialKey}),
 		mcpadmin.Module(),
 		oauth.Module(),
 		platform.Module(platform.Options{SecureCookies: cfg.App.Env != "dev"}),
-		tenant.Module(tenant.Options{SecureCookies: cfg.App.Env != "dev"}),
+		portalModule(cfg),
+		tenant.Module(tenant.Options{
+			SecureCookies:  cfg.App.Env != "dev",
+			MaxUploadBytes: int64(cfg.Storage.MaxUploadMB) * 1024 * 1024,
+		}),
 
 		// dev 下把后台 worker 一并挂到 api 进程，免去同时起多个服务。
 		optionalDevWorker(cfg),
@@ -66,6 +74,19 @@ func New(cfg Config) fx.Option {
 	)
 }
 
+// portalModule 在配置开启时挂载营销门户。
+func portalModule(cfg Config) fx.Option {
+	if !cfg.Portal.Enabled {
+		return fx.Options()
+	}
+
+	return portal.Module(portal.Options{
+		ConsoleURL:        cfg.Portal.ConsoleURL,
+		AutoApprove:       cfg.Portal.AutoApprove,
+		SignupRatePerHour: cfg.Portal.SignupRatePerHour,
+	})
+}
+
 // optionalDevWorker 在 dev 环境下把后台 worker 一并挂到 api 进程，方便单进程调试。
 // 生产环境通过独立的 cmd/worker 进程运行。
 func optionalDevWorker(cfg Config) fx.Option {
@@ -79,8 +100,10 @@ func optionalDevWorker(cfg Config) fx.Option {
 			CoolingDays:        cfg.Worker.CoolingDays,
 			AuditRetentionDays: cfg.Audit.RetentionDays,
 		}),
-		fx.Provide(worker.New),
+		fx.Supply(queueOptions(cfg)),
+		fx.Provide(worker.New, worker.NewQueueServer),
 		fx.Invoke(func(*worker.Worker) {}),
+		fx.Invoke(func(*queue.Server) {}),
 	)
 }
 
@@ -95,6 +118,9 @@ func Core(cfg Config) fx.Option {
 			newTenantDB,
 			newPlatformDB,
 			newRedisClient,
+			newStorage,
+			newSMSSender,
+			newQueueClient,
 		),
 	)
 }

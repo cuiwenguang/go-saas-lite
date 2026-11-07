@@ -1,0 +1,29 @@
+{{define "content"}}
+<section class="mx-auto max-w-6xl px-6 py-16">
+  <h1 class="text-3xl font-semibold tracking-tight sm:text-4xl">价格</h1>
+  <p class="mt-3 text-slate-600">套餐只定义配额上限，额度为 0 表示不限。</p>
+
+  {{if .Error}}<div class="alert-error mt-6">{{.Error}}</div>{{end}}
+
+  <div class="mt-10 grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+    {{range .Plans}}
+    <div class="flex flex-col rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <h2 class="text-xl font-semibold">{{.Name}}</h2>
+      <p class="mt-1 text-sm text-slate-500">{{.Code}}</p>
+      <ul class="mt-6 space-y-2 text-sm text-slate-600">
+        <li>用户数：{{if eq .Limits.MaxUsers 0}}不限{{else}}{{.Limits.MaxUsers}}{{end}}</li>
+        <li>存储空间：{{if eq .Limits.StorageGB 0}}不限{{else}}{{.Limits.StorageGB}} GB{{end}}</li>
+        <li>API QPS：{{if eq .Limits.APIQPS 0}}不限{{else}}{{.Limits.APIQPS}}{{end}}</li>
+        <li>API 调用/日：{{if eq .Limits.APICalls 0}}不限{{else}}{{.Limits.APICalls}}{{end}}</li>
+        <li>MCP 调用/日：{{if eq .Limits.MCPCalls 0}}不限{{else}}{{.Limits.MCPCalls}}{{end}}</li>
+        <li>MCP Tokens/日：{{if eq .Limits.MCPTokens 0}}不限{{else}}{{.Limits.MCPTokens}}{{end}}</li>
+        <li>MCP 并发会话：{{if eq .Limits.MCPSessions 0}}不限{{else}}{{.Limits.MCPSessions}}{{end}}</li>
+      </ul>
+      <a href="/signup" class="btn-primary mt-8">选择该套餐</a>
+    </div>
+    {{else}}
+    <p class="text-slate-500">暂未配置套餐。</p>
+    {{end}}
+  </div>
+</section>
+{{end}}

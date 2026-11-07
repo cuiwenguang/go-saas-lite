@@ -75,6 +75,7 @@ func newConsoleFixture(t *testing.T) *consoleFixture {
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
+	h.ClearMustChangePassword(t, created.ID, email)
 
 	cipher, err := mcp.NewCipher("test-credential-key")
 	if err != nil {
@@ -82,7 +83,7 @@ func newConsoleFixture(t *testing.T) *consoleFixture {
 	}
 
 	authorizer := authz.NewService(authz.NewGormSource(h.Tenant))
-	accountHandler := account.NewHandler(account.NewService(h.Tenant, h.Platform, issuer, apikey.NewService(h.Platform), h.Identity()), authorizer, account.Options{})
+	accountHandler := account.NewHandler(account.NewService(h.Tenant, h.Platform, issuer, apikey.NewService(h.Platform), h.Identity(), nil, nil, nil), authorizer, account.Options{})
 
 	engine := gin.New()
 	lookup := app.NewTenantLookup(h.Platform)
@@ -92,10 +93,10 @@ func newConsoleFixture(t *testing.T) *consoleFixture {
 	}
 	accountHandler.RegisterPublic(routeGroups.TenantAuth)
 	accountHandler.Register(routeGroups.Tenant)
-	members.NewHandler(members.NewService(h.Tenant, h.Identity()), authorizer).Register(routeGroups.Tenant)
+	members.NewHandler(members.NewService(h.Tenant, h.Identity(), nil, nil), authorizer).Register(routeGroups.Tenant)
 	stats.NewHandler(stats.NewService(h.Tenant, h.Platform), authorizer).Register(routeGroups.Tenant)
-	mcpadmin.NewHandler(mcpadmin.NewService(h.Tenant, cipher), authorizer).Register(routeGroups.Tenant)
-	oauthgrant.NewHandler(oauthgrant.NewService(h.Tenant, h.Platform), authorizer).Register(routeGroups.Tenant)
+	mcpadmin.NewHandler(mcpadmin.NewService(h.Tenant, cipher, nil), authorizer).Register(routeGroups.Tenant)
+	oauthgrant.NewHandler(oauthgrant.NewService(h.Tenant, h.Platform, nil, nil), authorizer).Register(routeGroups.Tenant)
 
 	return &consoleFixture{
 		engine:   engine,

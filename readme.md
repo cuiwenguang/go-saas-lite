@@ -477,9 +477,12 @@ database:
 
 ### 6. 文件存储
 
-- 底座只定义 `Storage` 接口：`Put / Get / Delete / SignedURL`
+- 底座定义 `Storage` 接口：`Put / Get / Delete / Exists / SignedURL`（`pkg/storage`）
+- 已实现三种驱动：`local`（默认，HMAC 签名下载）、`cos`（腾讯云）、`oss`（阿里云）；由 `storage.driver` 切换，云驱动缺凭据时启动直接报错
 - key 规范 `tenant/{tenant_id}/{biz}/{uuid}`，**由框架拼接**，业务不得自拼
-- 本地 / OSS / S3 实现放**独立扩展包**，不进默认骨架
+- 元数据落 `tenant_files`；上传受 `storage.max_upload_mb` 与套餐 `storage_gb` 双重限制
+- 删除先删元数据，再投递 `file.delete` 异步删对象（投递失败回退同步删除）
+- 归档租户清理时，文件清理器（worker `Cleaner`）删除对象与元数据
 
 ### 7. 数据迁移与版本管理
 
@@ -494,18 +497,23 @@ database:
 
 ### 8. 异步任务
 
-- 当前**未接入通用异步队列**（无 `TaskQueue` 接口 / asynq）；后台任务由 `internal/worker` 的定时循环承担（维护机客户清理、用量落库）。
-- 多副本安全：`cmd/worker` 运行时用 redis 维护锁（`worker:lock:maintenance`）保证同一时刻只有一个实例执行。
-- **dev 快捷**：`app.env=dev` 时 `internal/app` 会把 `worker.New` 一并挂到 api 进程（`optionalDevWorker`），省去单独起服务；生产仍用独立 `cmd/worker` 进程。
+- 已接入 asynq（`pkg/queue`），生产端与消费端共用 `internal/tasktype` 的类型与 payload
+- 已注册任务：`sms.send`、`file.delete`、`tenant.purge`、`tenant.provision.retry`、`demo.heartbeat`
+- `tenant.provision.retry` 走 `RetryProvisionExisting`：保留管理员现有密码续跑开通，不重新生成一次性密码
+- 后台定时任务由 `internal/worker` 承担（用量落库、到期流转、归档清理、审计保留期清理）；多副本用 redis 锁 `worker:lock:maintenance` 串行
+- `queue.enabled=false` 或未配置 Redis 时自动降级：API 只提供同步路径，worker 不启动队列
+- **dev 快捷**：`app.env=dev` 时 `internal/app` 会把 `worker.New` 与 `worker.NewQueueServer` 一并挂到 api 进程，省去单独起服务；生产仍用独立 `cmd/worker` 进程
 
 ### 9. 审计日志
 
-- 两个通道，**不要混**：平台操作日志（`system_operation_log`）、租户内操作日志（按 `tenant_id` 隔离，**未建表**，见 §九）
-- 平台通道已落地（`internal/platform/audit`）：`Record` 写入 + `GET /api/platform/v1/audit-logs` 查询，支持分类 / 动作 / 级别 / 操作人 / 对象 / 时间范围筛选
-- 字段：`category`（`tenant` / `plan` / `auth` / `security` / `config` / `system`）+ `action`（代码常量，如 `tenant.create`、`plan.toggle`）+ `level`（`info` / `warn`）+ `result` + 操作人（`actor_type` / `actor_id` / `actor_email`）+ `object_type` / `object_id` + `summary` + `before_data` / `after_data` + `request_id` + `ip`
-- 已埋点：租户开通 / 修改 / 续费 / 变更状态（归档记 warn）/ 重试开通 / 重置密码（warn）、套餐新建 / 修改 / 启停、平台登录成功与失败（warn）/ 改密（warn）、**跨租户查看租户用户**（`security`，warn）
+- 两个通道，**不要混**：平台操作日志（`system_operation_log`）、租户内操作日志（`tenant_operation_log`，按 `tenant_id` 隔离）
+- 平台通道（`internal/platform/audit`）：`Record` 写入 + `GET /api/platform/v1/audit-logs` 查询，支持分类 / 动作 / 级别 / 操作人 / 对象 / 时间范围筛选
+- 租户通道（`internal/tenant/audit`）：`Record` 写入 + `GET /api/tenant/v1/audit-logs` 查询（`audit:read`，仅 admin），支持分类 / 动作 / 级别 / 操作人 / 时间范围筛选
+- 字段：`category` + `action`（代码常量）+ `level`（`info` / `warn`）+ `result` + 操作人（平台为 `actor_type` / `actor_id` / `actor_email`，租户为 `actor_id` / `actor_email`）+ `object_type` / `object_id` + `summary` + `before_data` / `after_data` + `request_id` + `ip`
+- 平台已埋点：租户开通 / 修改 / 续费 / 变更状态（归档记 warn）/ 重试开通 / 重置密码（warn）、套餐新建 / 修改 / 启停、平台登录成功与失败（warn）/ 改密（warn）、**跨租户查看租户用户**（`security`，warn）
+- 租户已埋点：成员创建 / 修改 / 重置密码 / 变更角色、API Key 创建 / 撤销、MCP 服务与工具配置、文件上传 / 删除、OAuth 授权撤销
 - 操作人邮箱来自 JWT `email` claim（写入 `Scope.ActorEmail`），不额外查库；`request_id` / `ip` 由 `pkg/response` 中间件写入 ctx
-- 保留期：`audit.retention_days`（进程配置，默认 90），worker 每次 tick 清理超期记录
+- 保留期：`audit.retention_days`（进程配置，默认 90），worker 每次 tick 清理超期的**平台**审计记录
 - **不允许导出**：日志只用于页面查询与评审，按分类与风险级别筛选
 
 ### 10. 隔离测试工具 `internal/testutil`
@@ -978,7 +986,74 @@ MCP 链       /api/tenant/v1/mcp      : MCPAuth（API Key 或 aud=mcp 的 JWT）
 36. **`Scope` 只有一份来源**：由中间件写入 ctx，`tenancy.DB` 与业务方法一律经 `tenancy.ScopeFrom(ctx)` 读取；缺失即报错，不隐式跨租户
 37. **原生 SQL 自带租户条件**：`Raw` 只写单条参数化 SELECT，`tenant_id` 取自 `Scope`，且该查询必须配一条双租户隔离用例；不依赖框架改写 SQL
 
-## 七、交付顺序（里程碑）
+## 七、快速开始、回归与交付顺序
+
+### 7.1 快速开始
+
+前置：Go 1.27+、PostgreSQL 14+、Redis 6+、Node 18+（仅前端 / 门户构建需要）。
+
+```powershell
+# 1. 准备数据库（示例）
+#    createdb saas_test
+
+# 2. 执行迁移（平台组 + 租户组）
+go run ./cmd/migrate -dsn "postgres://postgres:123456@127.0.0.1:5432/saas_test?sslmode=disable" -command up -group all
+
+# 3. 初始化平台管理员
+go run ./cmd/migrate -dsn "postgres://postgres:123456@127.0.0.1:5432/saas_test?sslmode=disable" -command up -group platform -platform-admin admin@example.com:password123
+
+# 4. 启动 API（dev 下会同时挂 worker 与队列消费者）
+go run ./cmd/api
+
+# 5. 打开文档与门户
+#    http://localhost:8080/docs
+#    http://localhost:8080/
+```
+
+前端控制台：
+
+```powershell
+npm --prefix web install
+npm --prefix web run dev
+```
+
+常用配置（优先用 `SAAS_` 环境变量覆盖 `configs/config.yaml`）：
+
+| 变量 | 说明 |
+| --- | --- |
+| `SAAS_DATABASE__PLATFORM_DSN` / `SAAS_DATABASE__TENANT_DSN` | 平台组 / 租户组连接串 |
+| `SAAS_REDIS__ADDR` | Redis 地址；为空时关闭缓存、队列与失效广播 |
+| `SAAS_STORAGE__DRIVER` | `local` / `cos` / `oss` |
+| `SAAS_STORAGE__COS__SECRET_ID` / `SAAS_STORAGE__COS__SECRET_KEY` | 腾讯云 COS 凭据 |
+| `SAAS_STORAGE__OSS__ACCESS_KEY_ID` / `SAAS_STORAGE__OSS__ACCESS_KEY_SECRET` | 阿里云 OSS 凭据 |
+| `SAAS_QUEUE__ENABLED` | 是否启用 asynq |
+| `SAAS_SMS__PROVIDER` | 当前仅 `dev`（验证码写日志） |
+| `SAAS_PORTAL__AUTO_APPROVE` | 自助注册是否自动开通 |
+
+全量测试：
+
+```powershell
+$env:TEST_DATABASE_DSN="postgres://postgres:123456@127.0.0.1:5432/saas_test?sslmode=disable"
+$env:TEST_REDIS_ADDR="127.0.0.1:6379"
+go test ./...
+```
+
+> 测试共用一个库，用例已按唯一邮箱 / 手机号隔离；不要并行跑多个 `go test ./...` 进程。
+
+### 7.2 手工回归清单
+
+1. 门户注册：`/signup` 提交 → 收到验证码（dev 看日志）→ 完成注册；`auto_approve` 关闭时租户为 `pending`。
+2. 租户登录：邮箱 + 密码、手机号 + 密码、手机号 + 验证码三种方式；连续失败 5 次触发锁定。
+3. 强制改密：新开通 / 被重置密码的账号登录后只能访问 `/me` 与 `/auth/password`。
+4. 成员：创建（邮箱或手机号）、停用最后一个管理员被拒绝、变更角色、重置密码。
+5. 配额：把套餐 `max_users` 调小后创建成员返回配额错误；`/plan` 与总览显示一致。
+6. 文件：上传 → 列表 → 签名 URL 下载 → 删除；跨租户读取返回 404。
+7. 租户审计：完成上述操作后 `GET /api/tenant/v1/audit-logs` 能看到对应 `action`，另一个租户看不到。
+8. MCP：`initialize` → `tools/list` → `tools/call`；非法 `arguments` 被 `InputSchema` 拒绝；撤销授权后旧会话失效。
+9. 平台侧：开通租户 → 查看进度时间线 → 重试 / 重置密码 / 归档；套餐启停与审计可查。
+10. worker：归档租户超过冷却期后，框架表、`tenant_files` 与对象存储文件均被清理。
+
+### 7.3 交付顺序（里程碑）
 
 | 阶段 | 内容 |
 | --- | --- |
@@ -996,53 +1071,53 @@ MCP 链       /api/tenant/v1/mcp      : MCPAuth（API Key 或 aud=mcp 的 JWT）
 
 ## 八、下一步
 
-1. 租户侧安全能力：登录失败锁定、密码复杂度策略、`token_version` 在 Guard 校验（见 §9.2）
-2. 租户内审计日志 `tenant_operation_log`（当前只有平台通道 `system_operation_log`）
-3. MCP 入参按 `InputSchema` 校验、`mcp_sessions` / `mcp_tokens` 计量、`MCP-Protocol-Version` 协商
-4. 平台运行时配置（D10 第二层）暂不落库，继续用 `configs/config.yaml` + 环境变量
+1. 租户侧安全收尾：密码复杂度策略、`token_version` 在 Guard 中强制校验（当前仅文档化范围）
+2. MCP 协议收尾：`MCP-Protocol-Version` 头协商、`/oauth/consent` 同意页
+3. 写接口幂等（`Idempotency-Key`）、pprof 独立内网端口、CORS 按租户域名动态白名单
+4. 平台运行时配置（D10 第二层）落库；当前仍用 `configs/config.yaml` + 环境变量
 5. Schema-per-tenant（`TenantSchemaManager`、`cmd/migrate --all-tenants`）
+6. 计费与导出（下一阶段业务平台，当前仅预留套餐/用量数据）
 
 ## 九、实现现状核对（未完成清单）
 
-> 本节按 2026-11-06 代码实际状态核对。上方正文是**目标设计**；本节列出与设计的差距，某项实现后请同步删除对应条目。
+> 本节按 2026-11-07 代码实际状态核对。上方正文是**目标设计**；本节列出与设计的差距，某项实现后请同步删除对应条目。
 
 ### 9.1 已完成（有实现，多数有测试）
 
 - **租户生命周期**：开通（平台段提交 → 租户段事务 → 步骤落库）、CRUD、状态机（`canTransition`）、归档；迁移含 `tenants`/`roles`/`user_roles`/`users`/`tenant_configs`。
 - **隔离**：`Scope` + GORM Callback + `PlatformDB` 双连接池 + `platformTables` 白名单 + 双租户隔离用例。
-- **鉴权**：JWT（HS256，`aud` + `actor_type` 双校验，`typ` 区分 access / refresh）、平台/租户/MCP 三条链、平台路由级 `authz.PlatformRequire(perm)`（owner / viewer 静态矩阵）、`TenantStateGuard` 状态复查。
+- **鉴权**：JWT（HS256，`aud` + `actor_type` 双校验，`typ` 区分 access / refresh）、平台/租户/MCP 三条链、平台路由级 `authz.PlatformRequire(perm)`（owner / viewer 静态矩阵）、`TenantStateGuard` 状态复查、`must_change_password` 强制改密守卫。
 - **平台控制台**：会话（email 登录 / `GET /me` / refresh / logout / 改密）、租户管理（列表筛选 / 开通 / 进度时间线 / 重试 / 续费 / 归档 / 重置密码 / 用户 / 配额用量）、套餐（列表 + 引用数 / 新建 / 改配额 / 启停）、审计（6 分类 + 动作常量 + 风险级别 + 保留期清理）、总览（计数 / 近 7 天趋势 / 用量 Top5 / 失败待处理）。
 - **到期治理**：读时判定（`active` + `expire_at` 已过 → `expired`，不写库）+ 公开链与已鉴权链状态复查 + worker `ExpireTenants` 落库。
-- **租户控制台**：**全局登录**（邮箱全局唯一，平台组 `user_identities` 索引定位租户，`cmd/migrate -command repair-identities` 对账）+ 会话（`POST /auth/login` 无需租户参数、refresh cookie 轮换、logout、改密、`must_change_password` 强制改密）+ `GET /me` + 成员与角色（创建前全局唯一校验、一次性初始密码、状态启停、角色替换、重置密码、最后管理员保护、`GET /roles`）+ 总览（成员 / 套餐限额 / 近 30 天用量 / 近 7 天调用趋势）+ MCP 上游服务 CRUD（凭据 AES-GCM 加密，`mcp.credential_key`）+ 工具启停与 `required_perms`（校验 ⊆ `authz.All()`）+ 调用日志分页 + API Key + Agent 授权列表 / 撤销。
+- **租户控制台**：**邮箱 / 手机号全局登录**（平台组 `user_identities` 索引定位租户，`cmd/migrate -command repair-identities` 对账）+ 验证码登录 / 注册 / 重置密码（`internal/security/otp`，短信通道 `pkg/sms` 当前为 dev 日志）+ 登录失败锁定（5 次 / 15 分钟）+ 会话（refresh cookie 轮换、logout、改密、强制改密）+ `GET /me` + 成员与角色（邮箱/手机号至少一个、一次性初始密码、状态启停、角色替换、重置密码、最后管理员保护）+ 总览 + MCP 配置 + API Key + Agent 授权列表 / 撤销。
 - **RBAC**：权限点常量、内置角色（admin/member）、进程内缓存 + redis pub/sub 失效、`SyncBuiltinRoles`。
-- **配额**：`plans` + Redis 用量 + worker 落 `usage_daily` + QPS/`api_calls` 中间件 + MCP `mcp_calls` 计量。
-- **OAuth 2.1**：register / authorize / token / refresh（轮换）/ revoke + well-known + PKCE S256 + 单次授权码。
+- **配额**：`plans` + Redis 用量 + worker 落 `usage_daily` + QPS/`api_calls` 中间件 + MCP `mcp_calls` / `mcp_tokens` / `mcp_sessions` 计量 + `max_users` 创建校验。
+- **租户配置**：`tenant_configs` 读写 + 本地缓存 + Redis `tenantconf:reload` 失效广播。
+- **文件存储**：`pkg/storage`（local / cos / oss）+ `tenant_files` 元数据 + 上传/列表/删除/签名 URL + `storage_gb` 配额 + 归档清理钩子。
+- **审计**：平台 `system_operation_log` 与租户 `tenant_operation_log` 双通道，均支持分类 / 动作 / 级别 / 操作人 / 时间范围查询。
+- **OAuth 2.1**：register / authorize / token / refresh（轮换）/ revoke + well-known + PKCE S256 + 单次授权码；撤销授权时同步作废 MCP 会话。
 - **API Key**：`sk_live_` 生成 / 列表 / 撤销 / 鉴权（sha256 存储）。
-- **MCP**：Streamable HTTP 单端点、会话（Redis / 内存）、JSON-RPC、`tools/list` + `tools/call`、按 `required_perms` 过滤与再校验、`mcp_calls` 扣减 + 异步 `mcp_call_log`、上游代理 + SSRF 校验、SSE 单帧。
+- **MCP**：Streamable HTTP 单端点、会话（Redis / 内存）、JSON-RPC、`tools/list` + `tools/call`、`InputSchema` 入参校验、按 `required_perms` 过滤与再校验、用量扣减 + 异步 `mcp_call_log`、上游代理 + SSRF 校验、SSE 单帧。
+- **异步任务**：asynq + `pkg/queue` + `internal/tasktype`；已注册 `sms.send`、`file.delete`、`tenant.purge`、`tenant.provision.retry`、`demo.heartbeat`；优雅关闭，未启用时自动降级。
+- **营销门户**：Go 模板 + Tailwind CSS，提供首页 / 定价 / 注册（含 OTP）/ 登录 / 条款 / 隐私；同源校验 + IP 限流 + 蜜罐，支持审核制与自动开通。
+- **API 文档**：OpenAPI 3.1（`docs/api/openapi.yaml`）+ `/openapi.yaml` + `/docs` Swagger UI，并有路由与规范双向漂移测试。
 - **迁移**：goose + checksum + advisory lock + `cmd/migrate` 的 `up/status/verify/sync-roles/platform-admin`。
-- **worker**：redis 维护锁、用量落库、归档清理框架表；dev 下随 api 启动。
+- **worker**：redis 维护锁、用量落库、到期流转、归档清理（含文件对象）、审计保留期清理；dev 下随 api 启动。
 - **组件**：response / apperr / obs（slog/otel/metrics/health/recover）/ 优雅关闭 / koanf 配置。
 
 ### 9.2 未完成 / 与设计有差距
 
 | # | 项目 | 现状 | 影响 / 备注 |
 |---|---|---|---|
-| 1 | 租户内操作日志 `tenant_operation_log` | 未建表、无写入 | 平台通道 `system_operation_log` 已落地并埋点；租户内操作日志仍缺 |
-| 2 | 登录失败锁定 / 密码复杂度策略 / `token_version` 在 Guard 校验 | 部分实现 | 租户侧 refresh / logout / 改密 / 强制改密已实现；锁定、复杂度策略与 `token_version` 校验仍缺 |
-| 5 | 租户配置缓存 + 多副本通知 | 未实现 | `tenantconf` 直读 DB，无本地缓存 / pub-sub |
-| 6 | 其他 MCP 缺口 | 部分实现 | `mcp_tools` 保存时已校验 `required_perms ⊆ authz.All()`；`InputSchema` 入参校验仍缺 |
-| 7 | `tools/call` 按 `InputSchema` 校验入参 | 未实现 | 目前不校验 `arguments`，直接转发上游 |
-| 8 | MCP `mcp_sessions` / `mcp_tokens` 计量 | 未实现 | 会话不占配额；不统计上游 token 数 |
-| 9 | `MCP-Protocol-Version` 头协商 | 未实现 | `initialize` 固定回传服务端默认版本 |
-| 10 | Schema-per-tenant（`TenantSchemaManager`、`cmd/migrate --all-tenants`） | 未实现 | 仅共享表模式；`--all-tenants` 未启用即报错 |
-| 11 | 文件存储 `Storage` 接口（Put/Get/Delete/SignedURL） | 未实现 | `pkg/storage` 不存在 |
-| 12 | 异步队列（`TaskQueue` + asynq） | 未实现 | 仅 worker 定时循环 + redis 锁 |
-| 13 | 写接口幂等（`Idempotency-Key`） | 未实现 | 只在 CORS 允许头里列了该头，无中间件 |
-| 14 | pprof 独立内网端口 | 未实现 | 未挂载 |
-| 15 | CORS 按租户域名动态白名单 | 未实现 | 目前用 `server.allowed_origins` 静态配置。 |
-| 16 | `/oauth/consent` 同意页 | 未实现 | `authorize` 直接签发授权码。 |
-| 17 | 撤销授权时作废 `Mcp-Session-Id` | 未实现 | `revoke` 只删 refresh + 置 `oauth_grants.revoked_at`。 |
-| 18 | 平台运行时配置（D10 第二层，DB） | 不落库 | 按定稿使用进程配置（yaml + env）；`audit.retention_days` 等调整改配置后重启生效。 |
-| 19 | 集成测试目录 `internal/integration/` | 未建立 | 需要真实库的用例仍与包同目录。 |
-| 20 | 接口文档（OpenAPI / Swagger / huma） | 未实现 | 无内置 OpenAPI 描述与 Swagger UI；各模块路由目前只能看代码。 |
-| 21 | 租户二级域名 / Host 解析 | 可选能力 | 登录已改为全局邮箱登录；`tenancy.base_domain` + `TenantResolver` 仍供 OAuth 与自定义域名场景使用。 |
+| 1 | 密码复杂度策略 | 未实现 | 仅校验长度 ≥ 8；登录失败锁定已完成 |
+| 2 | `token_version` 在 Guard 校验 | 未实现 | 改密 / 重置时递增，但已签发 access token 不会立即失效；当前仅文档化范围（H5） |
+| 3 | `MCP-Protocol-Version` 头协商 | 未实现 | `initialize` 固定回传服务端默认版本 |
+| 4 | `/oauth/consent` 同意页 | 未实现 | `authorize` 直接签发授权码 |
+| 5 | Schema-per-tenant（`TenantSchemaManager`、`cmd/migrate --all-tenants`） | 未实现 | 仅共享表模式；`--all-tenants` 未启用即报错 |
+| 6 | 写接口幂等（`Idempotency-Key`） | 未实现 | 只在 CORS 允许头里列了该头，无中间件 |
+| 7 | pprof 独立内网端口 | 未实现 | 未挂载 |
+| 8 | CORS 按租户域名动态白名单 | 未实现 | 目前用 `server.allowed_origins` 静态配置 |
+| 9 | 平台运行时配置（D10 第二层，DB） | 不落库 | 使用进程配置（yaml + env）；`audit.retention_days` 等调整改配置后重启生效 |
+| 10 | 集成测试目录 `internal/integration/` | 未建立 | 需要真实库的用例仍与包同目录 |
+| 11 | 短信云通道 | 仅 dev | `sms.provider=dev` 只写日志；阿里云 / 腾讯云发送器未接 |
+| 12 | 租户二级域名 / Host 解析 | 可选能力 | 登录已改为全局标识登录；`tenancy.base_domain` + `TenantResolver` 仍供 OAuth 与自定义域名场景使用 |

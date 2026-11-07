@@ -30,6 +30,8 @@ func testConfig(t *testing.T) app.Config {
 	cfg := app.DefaultConfig()
 	cfg.Database.PlatformDSN = dsn
 	cfg.Database.TenantDSN = dsn
+	cfg.Auth.Secret = "test-secret"
+	cfg.Storage.Local.Root = t.TempDir()
 
 	return cfg
 }

@@ -8,6 +8,7 @@ type User struct {
 	ID                 string    `gorm:"column:id;primaryKey"`
 	TenantID           string    `gorm:"column:tenant_id"`
 	Email              string    `gorm:"column:email"`
+	Phone              *string   `gorm:"column:phone"`
 	DisplayName        string    `gorm:"column:display_name"`
 	PasswordHash       string    `gorm:"column:password_hash"`
 	Status             string    `gorm:"column:status"`

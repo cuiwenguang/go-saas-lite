@@ -26,6 +26,10 @@ var (
 
 	PermStatsRead = Read("stats")
 
+	PermFileRead   = Read("file")
+	PermFileCreate = Create("file")
+	PermFileDelete = Delete("file")
+
 	PermOAuthGrantRead   = Read("oauth.grant")
 	PermOAuthGrantRevoke = Custom("oauth.grant", "revoke")
 )
@@ -43,6 +47,8 @@ var MemberPerms = []Perm{
 	PermAPIKeyRevoke,
 	PermMCPRead,
 	PermStatsRead,
+	PermFileRead,
+	PermFileCreate,
 }
 
 // BuiltinRoles 返回内置角色 → 权限集合。
@@ -61,6 +67,7 @@ func RegisterBuiltins() error {
 	perms = append(perms,
 		PermUserCreate, PermUserUpdate, PermUserDelete,
 		PermMCPUpdate,
+		PermFileDelete,
 		PermOAuthGrantRead, PermOAuthGrantRevoke,
 		Read("audit"),
 	)

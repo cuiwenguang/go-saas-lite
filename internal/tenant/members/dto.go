@@ -13,6 +13,7 @@ type ListFilter struct {
 // CreateInput 是新建成员入参；Password 为空时生成一次性初始密码。
 type CreateInput struct {
 	Email       string `json:"email"`
+	Phone       string `json:"phone"`
 	DisplayName string `json:"display_name"`
 	Password    string `json:"password"`
 	Role        string `json:"role"`
@@ -33,6 +34,7 @@ type SetRolesInput struct {
 type UserOutput struct {
 	ID                 string    `json:"id"`
 	Email              string    `json:"email"`
+	Phone              string    `json:"phone,omitempty"`
 	DisplayName        string    `json:"display_name"`
 	Status             string    `json:"status"`
 	Roles              []string  `json:"roles"`

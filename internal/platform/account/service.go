@@ -7,12 +7,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
 	"github.com/cuiwenguang/go-saas-lite/internal/platform/audit"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/auth"
 	"github.com/cuiwenguang/go-saas-lite/internal/security/authz"
+	"github.com/cuiwenguang/go-saas-lite/internal/security/loginlimit"
 	"github.com/cuiwenguang/go-saas-lite/pkg/apperr"
 	"github.com/cuiwenguang/go-saas-lite/pkg/tenancy"
 )
@@ -28,18 +30,32 @@ const (
 
 // Service 处理平台登录与管理员初始化。
 type Service struct {
-	platform tenancy.PlatformDB
-	issuer   *auth.Issuer
-	audit    *audit.Service
+	platform   tenancy.PlatformDB
+	issuer     *auth.Issuer
+	audit      *audit.Service
+	loginLimit *loginlimit.Limiter
 }
 
-// NewService 创建平台认证服务。
-func NewService(platform tenancy.PlatformDB, issuer *auth.Issuer, auditService *audit.Service) *Service {
-	return &Service{platform: platform, issuer: issuer, audit: auditService}
+// NewService 创建平台认证服务；client 为 nil 时不启用登录锁定。
+func NewService(platform tenancy.PlatformDB, issuer *auth.Issuer, auditService *audit.Service, client *redis.Client) *Service {
+	return &Service{platform: platform, issuer: issuer, audit: auditService, loginLimit: loginlimit.New(client)}
 }
 
 // Login 校验平台账号并签发 access / refresh 令牌。
 func (s *Service) Login(ctx context.Context, in LoginInput) (*LoginOutput, error) {
+	email := strings.ToLower(strings.TrimSpace(in.Email))
+	limitKey := loginlimit.Key("platform", email)
+	if !s.loginLimit.Allow(ctx, limitKey) {
+		return nil, apperr.New(apperr.CodeUnauthenticated, "登录失败次数过多，请稍后再试")
+	}
+
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			s.loginLimit.Fail(ctx, limitKey)
+		}
+	}()
+
 	user, err := s.authenticate(ctx, in)
 	if err != nil {
 		s.recordAudit(ctx, audit.Entry{
@@ -67,6 +83,9 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*LoginOutput, error
 		ActorEmail: user.Email,
 		Summary:    "平台管理员登录",
 	})
+
+	succeeded = true
+	s.loginLimit.Reset(ctx, limitKey)
 
 	return out, nil
 }

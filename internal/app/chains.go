@@ -17,6 +17,7 @@ func TenantChain(group *gin.RouterGroup, issuer *auth.Issuer, lookup TenantLooku
 		Actor:    tenancy.ActorTenant,
 	}))
 	secured.Use(TenantStateGuard(lookup))
+	secured.Use(PasswordChangeGuard())
 
 	return secured
 }
