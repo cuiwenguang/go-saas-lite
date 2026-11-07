@@ -3,7 +3,7 @@ package apidocs
 
 import _ "embed"
 
-// OpenAPI 是 docs/api/openapi.yaml 的内容。
+// OpenAPI 是 openapi.yaml 的内容。
 //
 //go:embed openapi.yaml
 var OpenAPI []byte

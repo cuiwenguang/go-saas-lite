@@ -10,7 +10,7 @@ import (
 	"go.uber.org/fx"
 	"gopkg.in/yaml.v3"
 
-	apidocs "github.com/cuiwenguang/go-saas-lite/docs/api"
+	apidocs "github.com/cuiwenguang/go-saas-lite/internal/apidocs"
 	"github.com/cuiwenguang/go-saas-lite/internal/app"
 )
 

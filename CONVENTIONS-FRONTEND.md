@@ -1,7 +1,7 @@
 # 前端开发规范（web/）
 
 > 适用范围：`web/` 目录——单仓库、双入口的 Vue 工程。
-> 不适用：`internal/web/`（营销站，Go 模板，遵循 Go 侧 CONVENTIONS.md）。
+> 不适用：`internal/portal/`（营销站，Go 模板，遵循 Go 侧 CONVENTIONS.md）。
 > 效力：与 CONVENTIONS.md（后端）同等；冲突时以本文档为准（前端范围内）。
 > 写法原则：只收「工具能检查」或「评审一眼能判」的条款；做不到这两条的不写。
 

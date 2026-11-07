@@ -5,12 +5,28 @@
 *.test
 *.out
 
-# 本地配置覆盖
+# 本地配置：只提交示例
+configs/*.yaml
+!configs/config.example.yaml
 configs/*.local.yaml
 .env
+.env.*
+
+# 本地设计与迭代文档
+docs/
+
+# IDE / Agent 目录不提交
+.github/
+.vscode/
+.workbuddy/
+.idea/
+.fleet/
+.cursor/
+
+# 本地运行数据
+/data/
 
 # vue
 web/node_modules/
 web/portal/node_modules/
 web/dist/
-

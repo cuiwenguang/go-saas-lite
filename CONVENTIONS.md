@@ -1,9 +1,9 @@
 # 编码规范（已迁移）
 
-> **本文件已废弃，规范正文迁移为 Agent Skill：**
-> **`.github/skills/go-saas-lite-conventions/SKILL.md`**
+> **本文件已废弃，规范正文迁移为本地 Agent Skill：**
+> **`.github/skills/go-saas-lite-conventions/SKILL.md`**（该目录不随仓库提交）
 >
-> 开发时以 SKILL.md 为准；产品行为与边界仍以 `readme.md` 为准。
+> 开发时以本地 SKILL.md 为准；产品行为与边界见仓库 `README.md` 与本地 `docs/设计/项目说明.md`。
 > 下方内容仅作历史参考，请勿在此追加规则。
 
 ---
@@ -287,7 +287,7 @@ fx.Options(Core(cfg), tenant.Module(), tenantconf.Module(), ...)
 | 4 | `internal/mcpgateway/provider.go` | `Provider` 兼做数据访问 | 数据访问下沉，`Provider` 只做协议转换 |
 | 5 | `internal/apikey` + `internal/tenantaccount` | 能力与 HTTP 入口分居两包 | 按 §1.3（P2）已合规：能力留 `internal/apikey`，入口留 `internal/tenantaccount`，两层同在 internal（迁移已完成） |
 | 6 | 全局 | 无 `module.go`，readme 3.4 未落地 | 按 §4 决策统一 |
-| 7 | `readme.md` | 3.1 / 3.4 与本规范不一致 | 同步措辞 |
+| 7 | `readme.md` | 旧版设计与实现混写 | 已拆分为 GitHub 概览 + 本地 `docs/设计/项目说明.md` |
 | 8 | `internal/testutil/isolation_test.go`、`authz_test.go` | 用例放在夹具库，与 §9.1 冲突 | 迁 `internal/integration/` |
 | 9 | `internal/quota/service_test.go` 等 | 已直接 import `internal/testutil` | 随 §9.2 一并评估：要么下沉纯单测，要么迁 `internal/integration/` |
 | 10 | 多个包（`roleRow`、`userRow`、`keyRow`、`toolRow`…） | 表模型命名不一，带 `Row` 后缀 | 统一改领域名词：`Role`、`User`、`APIKey`、`Tool` |

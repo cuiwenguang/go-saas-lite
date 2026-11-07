@@ -5,7 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	apidocs "github.com/cuiwenguang/go-saas-lite/docs/api"
+	apidocs "github.com/cuiwenguang/go-saas-lite/internal/apidocs"
 )
 
 // registerDocs 暴露 OpenAPI 规范与 Swagger UI。
